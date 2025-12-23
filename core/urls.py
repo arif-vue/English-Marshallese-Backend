@@ -2,18 +2,19 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    # Search
-    path('search/', views.search_translation, name='search_translation'),
+    # AI-Powered Translation (Primary endpoint for all translations)
+    path('translation/', views.ai_translate, name='ai_translate'),
+    
+    # User Translation History
+    path('history/', views.get_user_history, name='user_history'),
+    path('myfavorites/', views.get_user_favorites, name='user_favorites'),
+    path('myfavorites/toggle/', views.toggle_user_favorite, name='toggle_user_favorite'),
     
     # Translation Detail (with AI context)
     path('<int:translation_id>/', views.get_translation_detail, name='translation_detail'),
     
     # Recent Translations
     path('recent/', views.get_recent_translations, name='recent_translations'),
-    
-    # Favorites
-    path('favorites/', views.get_favorite_translations, name='favorite_translations'),
-    path('favorites/toggle/', views.toggle_favorite, name='toggle_favorite'),
     
     # Categories
     path('categories/', views.get_categories, name='translation_categories'),
@@ -23,5 +24,5 @@ urlpatterns = [
     path('submit/', views.submit_translation, name='submit_translation'),
     
     # List all (with pagination)
-    path('', views.list_all_translations, name='list_translations'),
+    path('page/<int:page>/', views.list_all_translations, name='list_translations'),
 ]

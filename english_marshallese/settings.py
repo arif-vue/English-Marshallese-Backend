@@ -156,5 +156,8 @@ STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
 
+# Gemini AI Configuration
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+
 # Test email domains (for development)
 TEST_EMAIL_DOMAINS = ['example.com', 'test.com', 'testing.com']

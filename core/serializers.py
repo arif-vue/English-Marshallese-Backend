@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Translation
+from .models import Translation, UserTranslationHistory
 
 
 class TranslationSerializer(serializers.ModelSerializer):
@@ -23,17 +23,6 @@ class TranslationSerializer(serializers.ModelSerializer):
             'updated_date'
         ]
         read_only_fields = ['id', 'created_date', 'updated_date', 'usage_count', 'created_by_email']
-
-
-class TranslationSearchSerializer(serializers.Serializer):
-    """Serializer for translation search requests"""
-    query = serializers.CharField(required=True, max_length=500)
-    source_language = serializers.ChoiceField(
-        choices=['english', 'marshallese'],
-        default='english',
-        required=False
-    )
-    category = serializers.CharField(required=False, allow_blank=True)
 
 
 class TranslationDetailSerializer(serializers.ModelSerializer):
@@ -78,14 +67,31 @@ class TranslationDetailSerializer(serializers.ModelSerializer):
         return context_templates.get(obj.category, obj.description or 'Translation term.')
 
 
-class FavoriteToggleSerializer(serializers.Serializer):
-    """Serializer for toggling favorite status"""
-    translation_id = serializers.IntegerField(required=True)
-
-
 class RecentTranslationSerializer(serializers.ModelSerializer):
     """Simplified serializer for recent translations"""
     
     class Meta:
         model = Translation
         fields = ['id', 'english_text', 'marshallese_text', 'category', 'usage_count']
+
+
+class UserTranslationHistorySerializer(serializers.ModelSerializer):
+    """Serializer for User Translation History"""
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    
+    class Meta:
+        model = UserTranslationHistory
+        fields = [
+            'id',
+            'user_email',
+            'original_text',
+            'translated_text',
+            'context',
+            'source',
+            'confidence',
+            'is_favorite',
+            'created_date',
+            'updated_date'
+        ]
+        read_only_fields = ['id', 'user_email', 'created_date', 'updated_date']
+

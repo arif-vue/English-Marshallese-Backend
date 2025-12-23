@@ -1,27 +1,46 @@
-"""
-AI-powered Translation Service using Gemini API
-Converts FastAPI implementation to Django-compatible service
-"""
-import os
-import json
-import re
-from typing import Dict, List, Tuple
-from difflib import SequenceMatcher
-from django.conf import settings
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List, Dict
 import google.generativeai as genai
-from .models import Translation
+import sqlite3
+from pathlib import Path
+from difflib import SequenceMatcher
 
+# -----------------------------
+# Database Configuration
+# -------------------------------------------------------
+DB_PATH = "/home/iamsmsr/Desktop/JVAI/lily/translations.db"
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', settings.GEMINI_API_KEY if hasattr(settings, 'GEMINI_API_KEY') else None)
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-else:
-    model = None
+# -------------------------------------------------------
+GEMINI_API_KEY = "AIzaSyAshE9cGFdqBVNLi7dVv9bvZ7QgkBPdDH0"
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-2.5-flash')
 
+# -----------------------------
+# FastAPI App
+# -----------------------------
+app = FastAPI(title="English-Marshallese Translation API")
 
-def extract_keywords(text: str) -> List[str]:
+# -----------------------------
+# Request & Response Models
+# -----------------------------
+class TranslationRequest(BaseModel):
+    text: str
+
+class TranslationResponse(BaseModel):
+    translation: str
+    context: str  # What the translation is about
+    source: str  # "exact_match", "fuzzy_match", "combined", "llm_generated"
+    confidence: str = "medium"
+    details: Dict = {}  # Breakdown of which parts are exact/fuzzy/generated
+    admin_review_needed: bool = False  # Flag for admin review
+    notes: str = ""
+
+# -----------------------------
+# Actual functions that will be called based on model's suggestion
+# -------------------------------------------------------
+def extract_keywords(text: str) -> list:
     """Extract meaningful keywords from text, removing common words.
     Supports both English and Marshallese.
     
@@ -40,24 +59,19 @@ def extract_keywords(text: str) -> List[str]:
         'when', 'who', 'which', 'why', 'how'
     }
     
-    # Common Marshallese stop words
+    # Common Marshallese stop words (if any)
     marshallese_stop_words = {
-        'im', 'eo', 'ro', 'ji'
+        'im', 'eo', 'ro', 'ji'  # Common Marshallese words
     }
     
     all_stop_words = english_stop_words | marshallese_stop_words
     
     # Split into words and filter
     words = text.lower().split()
-    keywords = [
-        w.strip('.,!?;:—-') 
-        for w in words 
-        if w.lower().strip('.,!?;:—-') not in all_stop_words and len(w.strip('.,!?;:—-')) > 0
-    ]
+    keywords = [w.strip('.,!?;:—-') for w in words if w.lower().strip('.,!?;:—-') not in all_stop_words and len(w.strip('.,!?;:—-')) > 0]
     return keywords
 
-
-def fuzzy_match(query: str, target: str, threshold: float = 0.8) -> Tuple[bool, float]:
+def fuzzy_match(query: str, target: str, threshold: float = 0.8) -> tuple:
     """Calculate fuzzy match similarity between two strings.
     
     Args:
@@ -76,29 +90,32 @@ def fuzzy_match(query: str, target: str, threshold: float = 0.8) -> Tuple[bool, 
     
     return (similarity >= threshold, similarity)
 
-
-def search_by_fuzzy(keyword: str, limit: int = 3) -> List[Dict]:
+def search_by_fuzzy(keyword: str, cursor, limit: int = 3) -> list:
     """Search database using fuzzy matching for typos and partial matches (bidirectional).
     Works for both English and Marshallese keywords.
     
     Args:
         keyword: Keyword to search with fuzzy matching
+        cursor: Database cursor
         limit: Number of results to return
     
     Returns:
         List of fuzzy matched results
     """
-    # Get all entries (for fuzzy matching)
-    all_entries = Translation.objects.all().order_by('-usage_count').values(
-        'english_text', 'marshallese_text', 'category', 'usage_count'
-    )
+    # Get all entries (for client-side fuzzy matching)
+    cursor.execute('''
+        SELECT marshallese_text, category, usage_count, english_text
+        FROM translations 
+        ORDER BY usage_count DESC
+    ''')
     
+    all_entries = cursor.fetchall()
     fuzzy_results = []
     
     # Fuzzy match against both English and Marshallese
     for entry in all_entries:
-        english_text = entry['english_text']
-        marshallese_text = entry['marshallese_text']
+        english_text = entry[3]
+        marshallese_text = entry[0]
         
         # Check similarity with English text
         is_match_eng, similarity_eng = fuzzy_match(keyword, english_text, threshold=0.65)
@@ -115,8 +132,8 @@ def search_by_fuzzy(keyword: str, limit: int = 3) -> List[Dict]:
                 "match": english_text if similarity_eng >= similarity_mar else marshallese_text,
                 "english": english_text,
                 "marshallese": marshallese_text,
-                "category": entry['category'],
-                "usage_count": entry['usage_count'],
+                "category": entry[1],
+                "usage_count": entry[2],
                 "similarity": round(best_similarity, 2),
                 "match_type": "fuzzy"
             })
@@ -125,8 +142,7 @@ def search_by_fuzzy(keyword: str, limit: int = 3) -> List[Dict]:
     fuzzy_results.sort(key=lambda x: x["similarity"], reverse=True)
     return fuzzy_results[:limit]
 
-
-def search_translation_db(query_text: str) -> Dict:
+def search_translation_db(query_text: str) -> dict:
     """Search translation database with simple workflow.
     
     Workflow:
@@ -142,6 +158,9 @@ def search_translation_db(query_text: str) -> Dict:
         A dictionary with exact_matches, fuzzy_matches, and keywords info
     """
     try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
         # Step 1: Extract keywords from input
         keywords = extract_keywords(query_text)
         if not keywords:
@@ -154,20 +173,22 @@ def search_translation_db(query_text: str) -> Dict:
         keywords_for_fuzzy = []
         
         for keyword in keywords:
-            # Search in both English and Marshallese (case-insensitive)
-            result = Translation.objects.filter(
-                english_text__iexact=keyword
-            ).first() or Translation.objects.filter(
-                marshallese_text__iexact=keyword
-            ).first()
+            cursor.execute('''
+                SELECT marshallese_text, category, usage_count, english_text
+                FROM translations 
+                WHERE LOWER(english_text) = LOWER(?) 
+                   OR LOWER(marshallese_text) = LOWER(?)
+                LIMIT 1
+            ''', (keyword, keyword))
             
+            result = cursor.fetchone()
             if result:
-                print(f"[DEBUG] Exact match for '{keyword}': {result.english_text} ↔ {result.marshallese_text}")
+                print(f"[DEBUG] Exact match for '{keyword}': {result[3]} ↔ {result[0]}")
                 exact_matches.append({
                     "keyword": keyword,
-                    "english": result.english_text,
-                    "marshallese": result.marshallese_text,
-                    "category": result.category,
+                    "english": result[3],
+                    "marshallese": result[0],
+                    "category": result[1],
                     "match_type": "exact"
                 })
             else:
@@ -177,7 +198,7 @@ def search_translation_db(query_text: str) -> Dict:
         # Step 3: Try fuzzy match for keywords without exact match (typos/similar)
         fuzzy_matches = []
         for keyword in keywords_for_fuzzy:
-            fuzzy_results = search_by_fuzzy(keyword, limit=1)  # Get best match only
+            fuzzy_results = search_by_fuzzy(keyword, cursor, limit=1)  # Get best match only
             if fuzzy_results:
                 best_match = fuzzy_results[0]
                 print(f"[DEBUG] Fuzzy match for '{keyword}': {best_match['english']} ↔ {best_match['marshallese']} (similarity: {best_match['similarity']})")
@@ -191,6 +212,8 @@ def search_translation_db(query_text: str) -> Dict:
                 })
             else:
                 print(f"[DEBUG] No fuzzy match for '{keyword}'")
+        
+        conn.close()
         
         # Return findings for LLM
         return {
@@ -208,33 +231,12 @@ def search_translation_db(query_text: str) -> Dict:
         print(f"Database error: {e}")
         return {"error": str(e)}
 
-
-def translate_with_ai(user_text: str) -> Dict:
-    """
-    Translate text using AI with database lookup.
-    
-    Workflow:
-    1. Extract keywords
-    2. Search database (exact + fuzzy)
-    3. Send findings to Gemini LLM
-    4. Parse and return translation with metadata
-    
-    Args:
-        user_text: Text to translate
-        
-    Returns:
-        Dictionary with translation, context, source, confidence, details, admin_review_needed, notes
-    """
-    if not model:
-        return {
-            "translation": user_text,
-            "context": "Error",
-            "source": "error",
-            "confidence": "low",
-            "details": {},
-            "admin_review_needed": True,
-            "notes": "Gemini API key not configured"
-        }
+# -----------------------------
+# Translation Endpoint
+# -----------------------------
+@app.post("/translate", response_model=TranslationResponse)
+def translate(req: TranslationRequest):
+    user_text = req.text
     
     # Step 1: Extract keywords
     keywords = extract_keywords(user_text)
@@ -245,15 +247,14 @@ def translate_with_ai(user_text: str) -> Dict:
     search_results = search_translation_db(user_text)
     
     if "error" in search_results:
-        return {
-            "translation": user_text,
-            "context": "Error",
-            "source": "error",
-            "confidence": "low",
-            "details": {},
-            "admin_review_needed": True,
-            "notes": f"Database error: {search_results['error']}"
-        }
+        return TranslationResponse(
+            translation=user_text,
+            source="error",
+            match_type="error",
+            needs_review=True,
+            confidence="low",
+            notes=f"Database error: {search_results['error']}"
+        )
     
     # Step 3: Send findings to LLM with clear instructions
     exact_matches = search_results.get("exact_matches", [])
@@ -298,22 +299,15 @@ Return in this EXACT JSON format:
 }"""
 
     # Step 4: Send to LLM
-    try:
-        response = model.generate_content(context)
-        llm_text = response.text if response.text else "{}"
-    except Exception as e:
-        return {
-            "translation": user_text,
-            "context": "Error",
-            "source": "error",
-            "confidence": "low",
-            "details": {},
-            "admin_review_needed": True,
-            "notes": f"Gemini API error: {str(e)}"
-        }
+    response = model.generate_content(context)
     
     # Step 5: Parse LLM response and extract clean translation
+    llm_text = response.text if response.text else "{}"
+    
     try:
+        import json
+        import re
+        
         # Clean up the response - remove markdown code blocks if present
         cleaned_text = llm_text.strip()
         if cleaned_text.startswith("```json"):
@@ -369,22 +363,16 @@ Return in this EXACT JSON format:
         "fuzzy_matches": len(fuzzy_matches),
         "generated_words": not_found_count,
         "breakdown": word_breakdown,
-        "exact_match_list": [
-            {"keyword": m["keyword"], "translation": f"{m['english']} ↔ {m['marshallese']}"} 
-            for m in exact_matches
-        ],
-        "fuzzy_match_list": [
-            {"keyword": m["keyword"], "translation": f"{m['english']} ↔ {m['marshallese']}", "similarity": m["similarity"]} 
-            for m in fuzzy_matches
-        ]
+        "exact_match_list": [{"keyword": m["keyword"], "translation": f"{m['english']} ↔ {m['marshallese']}"} for m in exact_matches],
+        "fuzzy_match_list": [{"keyword": m["keyword"], "translation": f"{m['english']} ↔ {m['marshallese']}", "similarity": m["similarity"]} for m in fuzzy_matches]
     }
     
-    return {
-        "translation": translation,
-        "context": context_desc,
-        "source": source,
-        "confidence": confidence,
-        "details": details,
-        "admin_review_needed": admin_review,
-        "notes": f"Translation quality: {confidence}. Admin review: {'Required' if admin_review else 'Not needed'}"
-    }
+    return TranslationResponse(
+        translation=translation,
+        context=context_desc,
+        source=source,
+        confidence=confidence,
+        details=details,
+        admin_review_needed=admin_review,
+        notes=f"Translation quality: {confidence}. Admin review: {'Required' if admin_review else 'Not needed'}"
+    )

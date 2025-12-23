@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Translation
+from .models import Translation, UserTranslationHistory
 
 # Register your models here.
 
@@ -31,3 +31,41 @@ class TranslationAdmin(admin.ModelAdmin):
     def marshallese_text_short(self, obj):
         return obj.marshallese_text[:50] + '...' if len(obj.marshallese_text) > 50 else obj.marshallese_text
     marshallese_text_short.short_description = 'Marshallese'
+
+
+@admin.register(UserTranslationHistory)
+class UserTranslationHistoryAdmin(admin.ModelAdmin):
+    list_display = ('user_email', 'original_short', 'translated_short', 'source', 'confidence', 'is_favorite', 'created_date')
+    list_filter = ('source', 'confidence', 'is_favorite', 'created_date', 'user')
+    search_fields = ('original_text', 'translated_text', 'user__email')
+    readonly_fields = ('created_date', 'updated_date')
+    ordering = ('-created_date',)
+    
+    fieldsets = (
+        ('User', {
+            'fields': ('user',)
+        }),
+        ('Translation', {
+            'fields': ('original_text', 'translated_text', 'context')
+        }),
+        ('Quality', {
+            'fields': ('source', 'confidence', 'is_favorite')
+        }),
+        ('Timestamps', {
+            'fields': ('created_date', 'updated_date'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def user_email(self, obj):
+        return obj.user.email
+    user_email.short_description = 'User'
+    
+    def original_short(self, obj):
+        return obj.original_text[:40] + '...' if len(obj.original_text) > 40 else obj.original_text
+    original_short.short_description = 'Original'
+    
+    def translated_short(self, obj):
+        return obj.translated_text[:40] + '...' if len(obj.translated_text) > 40 else obj.translated_text
+    translated_short.short_description = 'Translation'
+

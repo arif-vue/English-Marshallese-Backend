@@ -3,14 +3,13 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Q
-from .models import Translation
+from .models import Translation, UserTranslationHistory
 from .serializers import (
     TranslationSerializer, 
-    TranslationSearchSerializer,
     TranslationDetailSerializer,
-    FavoriteToggleSerializer,
     RecentTranslationSerializer
 )
+from .ai_service import translate_with_ai
 
 
 def success_response(message, data=None, code=200):
@@ -29,57 +28,6 @@ def error_response(message, details=None, code=400):
         "message": message,
         "details": details or {}
     }, status=code)
-
-
-# ==================== TRANSLATION SEARCH ====================
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def search_translation(request):
-    """
-    Search for translations by text (English or Marshallese)
-    POST /api/translations/search/
-    {
-        "query": "bone",
-        "source_language": "english",  // optional: "english" or "marshallese"
-        "category": "body_parts"  // optional filter
-    }
-    """
-    serializer = TranslationSearchSerializer(data=request.data)
-    if not serializer.is_valid():
-        return error_response(
-            message="Validation error",
-            details=serializer.errors,
-            code=400
-        )
-    
-    query = serializer.validated_data['query']
-    source_language = serializer.validated_data.get('source_language', 'english')
-    category = serializer.validated_data.get('category')
-    
-    # Build search query
-    if source_language == 'english':
-        translations = Translation.objects.filter(
-            Q(english_text__icontains=query)
-        )
-    else:  # marshallese
-        translations = Translation.objects.filter(
-            Q(marshallese_text__icontains=query)
-        )
-    
-    # Apply category filter if provided
-    if category:
-        translations = translations.filter(category=category)
-    
-    # Order by exact match first, then usage count
-    translations = translations.order_by('-usage_count', 'english_text')[:20]
-    
-    result_serializer = TranslationSerializer(translations, many=True)
-    
-    return success_response(
-        message=f"Found {translations.count()} translations",
-        data=result_serializer.data
-    )
 
 
 # ==================== TRANSLATION DETAIL WITH AI CONTEXT ====================
@@ -129,65 +77,6 @@ def get_recent_translations(request):
         message="Recent translations retrieved successfully",
         data=serializer.data
     )
-
-
-# ==================== FAVORITE TRANSLATIONS ====================
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_favorite_translations(request):
-    """
-    Get user's favorite translations
-    GET /api/translations/favorites/
-    """
-    favorites = Translation.objects.filter(
-        is_favorite=True
-    ).order_by('-created_date')
-    
-    serializer = TranslationSerializer(favorites, many=True)
-    
-    return success_response(
-        message="Favorite translations retrieved successfully",
-        data=serializer.data
-    )
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def toggle_favorite(request):
-    """
-    Toggle favorite status for a translation
-    POST /api/translations/favorites/toggle/
-    {
-        "translation_id": 1
-    }
-    """
-    serializer = FavoriteToggleSerializer(data=request.data)
-    if not serializer.is_valid():
-        return error_response(
-            message="Validation error",
-            details=serializer.errors
-        )
-    
-    translation_id = serializer.validated_data['translation_id']
-    
-    try:
-        translation = Translation.objects.get(id=translation_id)
-        translation.is_favorite = not translation.is_favorite
-        translation.save()
-        
-        return success_response(
-            message=f"Translation {'added to' if translation.is_favorite else 'removed from'} favorites",
-            data={
-                "id": translation.id,
-                "is_favorite": translation.is_favorite
-            }
-        )
-    except Translation.DoesNotExist:
-        return error_response(
-            message="Translation not found",
-            code=404
-        )
 
 
 # ==================== CATEGORY LISTINGS ====================
@@ -284,13 +173,14 @@ def submit_translation(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-def list_all_translations(request):
+def list_all_translations(request, page=1):
     """
-    Get all translations with optional pagination
-    GET /api/translations/?page=1&limit=50
+    Get all translations with pagination
+    GET /api/core/page/1/
+    GET /api/core/page/2/
+    Default: 30 items per page
     """
-    page = int(request.GET.get('page', 1))
-    limit = int(request.GET.get('limit', 50))
+    limit = 30  # Default items per page
     
     offset = (page - 1) * limit
     
@@ -309,3 +199,137 @@ def list_all_translations(request):
             "has_more": (offset + limit) < total_count
         }
     )
+
+
+# ==================== AI-POWERED TRANSLATION ====================
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def ai_translate(request):
+    """
+    AI-powered translation with database lookup and Gemini assistance
+    POST /api/translations/ai-translate/
+    {
+        "text": "I have a headache"
+    }
+    
+    Returns translation with quality indicators and admin review flag
+    """
+    text = request.data.get('text', '').strip()
+    
+    if not text:
+        return error_response(
+            message="Text is required",
+            details={"text": ["This field is required"]},
+            code=400
+        )
+    
+    # Call AI service
+    result = translate_with_ai(text)
+    
+    # Save to user's history if authenticated
+    history_id = None
+    if request.user.is_authenticated:
+        history = UserTranslationHistory.objects.create(
+            user=request.user,
+            original_text=text,
+            translated_text=result.get('translation', ''),
+            context=result.get('context', ''),
+            source=result.get('source', 'llm_generated'),
+            confidence=result.get('confidence', 'medium'),
+            is_favorite=False
+        )
+        history_id = history.id
+    
+    # Add history_id to response
+    response_data = result.copy()
+    response_data['history_id'] = history_id
+    
+    return success_response(
+        message="Translation completed successfully",
+        data=response_data
+    )
+
+
+
+# ==================== USER TRANSLATION HISTORY ====================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_history(request):
+    """
+    Get user's translation history
+    GET /api/core/history/
+    """
+    history = UserTranslationHistory.objects.filter(
+        user=request.user
+    ).order_by('-created_date')[:50]
+    
+    from .serializers import UserTranslationHistorySerializer
+    serializer = UserTranslationHistorySerializer(history, many=True)
+    
+    return success_response(
+        message="Translation history retrieved successfully",
+        data=serializer.data
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_favorites(request):
+    """
+    Get user's favorite translations from history
+    GET /api/core/myfavorites/
+    """
+    favorites = UserTranslationHistory.objects.filter(
+        user=request.user,
+        is_favorite=True
+    ).order_by('-updated_date')
+    
+    from .serializers import UserTranslationHistorySerializer
+    serializer = UserTranslationHistorySerializer(favorites, many=True)
+    
+    return success_response(
+        message="Favorite translations retrieved successfully",
+        data=serializer.data
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_user_favorite(request):
+    """
+    Toggle favorite status for user's translation history
+    POST /api/core/myfavorites/toggle/
+    {
+        "history_id": 1
+    }
+    """
+    history_id = request.data.get('history_id')
+    
+    if not history_id:
+        return error_response(
+            message="history_id is required",
+            code=400
+        )
+    
+    try:
+        history = UserTranslationHistory.objects.get(
+            id=history_id,
+            user=request.user
+        )
+        history.is_favorite = not history.is_favorite
+        history.save()
+        
+        return success_response(
+            message=f"Translation {'added to' if history.is_favorite else 'removed from'} favorites",
+            data={
+                "history_id": history.id,
+                "is_favorite": history.is_favorite
+            }
+        )
+    except UserTranslationHistory.DoesNotExist:
+        return error_response(
+            message="Translation history not found",
+            code=404
+        )
