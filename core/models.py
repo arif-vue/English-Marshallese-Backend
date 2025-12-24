@@ -79,6 +79,19 @@ class UserTranslationHistory(models.Model):
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='llm_generated')
     confidence = models.CharField(max_length=10, default='medium')
     
+    # Admin review
+    admin_review = models.BooleanField(default=False)  # Flag for admin review needed
+    is_reviewed = models.BooleanField(default=False)  # Whether admin has reviewed
+    updated_translation = models.TextField(blank=True, null=True)  # Admin's updated translation
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_translations'
+    )
+    reviewed_date = models.DateTimeField(null=True, blank=True)
+    
     # User interaction
     is_favorite = models.BooleanField(default=False)
     
@@ -97,3 +110,63 @@ class UserTranslationHistory(models.Model):
     
     def __str__(self):
         return f"{self.user.email}: {self.original_text[:30]} → {self.translated_text[:30]}"
+
+
+class UserSubmission(models.Model):
+    """Model for user-submitted translations pending admin review"""
+    
+    STATUS_CHOICES = (
+        ('pending', 'Pending Review'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    )
+    
+    CATEGORY_CHOICES = (
+        ('common_phrases', 'Common Phrases'),
+        ('questions', 'Questions'),
+        ('general', 'General'),
+        ('symptoms', 'Symptoms'),
+        ('body_parts', 'Body Parts'),
+        ('medication', 'Medication'),
+    )
+    
+    # User reference
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='submissions'
+    )
+    
+    # Submission fields
+    source_text = models.TextField()  # The English text
+    known_translation = models.TextField(blank=True, null=True)  # Suggested Marshallese (optional)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='general')
+    notes = models.TextField(blank=True, null=True)  # Context or notes
+    
+    # Status
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    admin_notes = models.TextField(blank=True, null=True)  # Admin feedback
+    
+    # Metadata
+    created_date = models.DateTimeField(auto_now_add=True)
+    updated_date = models.DateTimeField(auto_now=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_submissions'
+    )
+    reviewed_date = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ['-created_date']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['status', '-created_date']),
+        ]
+        verbose_name = 'User Submission'
+        verbose_name_plural = 'User Submissions'
+    
+    def __str__(self):
+        return f"{self.user.email}: {self.source_text[:30]} ({self.status})"

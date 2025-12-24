@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Translation, UserTranslationHistory
+from django.db.models import Q
+from .models import Translation, UserTranslationHistory, UserSubmission
 
 
 class TranslationSerializer(serializers.ModelSerializer):
@@ -78,6 +79,8 @@ class RecentTranslationSerializer(serializers.ModelSerializer):
 class UserTranslationHistorySerializer(serializers.ModelSerializer):
     """Serializer for User Translation History"""
     user_email = serializers.EmailField(source='user.email', read_only=True)
+    category = serializers.SerializerMethodField()
+    category_display = serializers.SerializerMethodField()
     
     class Meta:
         model = UserTranslationHistory
@@ -90,8 +93,77 @@ class UserTranslationHistorySerializer(serializers.ModelSerializer):
             'source',
             'confidence',
             'is_favorite',
+            'category',
+            'category_display',
+            'admin_review',
+            'is_reviewed',
+            'updated_translation',
             'created_date',
             'updated_date'
         ]
         read_only_fields = ['id', 'user_email', 'created_date', 'updated_date']
+    
+    def get_category(self, obj):
+        """Extract category from context or derive from translation"""
+        # Try to extract category from context
+        if obj.context:
+            context_lower = obj.context.lower()
+            if 'body part' in context_lower or 'anatomical' in context_lower:
+                return 'body_parts'
+            elif 'symptom' in context_lower or 'health condition' in context_lower:
+                return 'symptoms'
+            elif 'medication' in context_lower or 'pharmaceutical' in context_lower:
+                return 'medication'
+            elif 'common phrase' in context_lower or 'daily conversation' in context_lower:
+                return 'common_phrases'
+            elif 'question' in context_lower:
+                return 'questions'
+        
+        # Try to find matching translation in database
+        try:
+            from .models import Translation
+            translation = Translation.objects.filter(
+                Q(english_text__iexact=obj.original_text) | 
+                Q(marshallese_text__iexact=obj.translated_text)
+            ).first()
+            if translation:
+                return translation.category
+        except:
+            pass
+        
+        return 'general'
+    
+    def get_category_display(self, obj):
+        """Get human-readable category name"""
+        category = self.get_category(obj)
+        return category.replace('_', ' ').title()
+
+
+class UserSubmissionSerializer(serializers.ModelSerializer):
+    """Serializer for User Submission"""
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    category_display = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = UserSubmission
+        fields = [
+            'id',
+            'user_email',
+            'source_text',
+            'known_translation',
+            'category',
+            'category_display',
+            'notes',
+            'status',
+            'status_display',
+            'admin_notes',
+            'created_date',
+            'updated_date'
+        ]
+        read_only_fields = ['id', 'user_email', 'status', 'admin_notes', 'created_date', 'updated_date']
+    
+    def get_category_display(self, obj):
+        """Get human-readable category name"""
+        return obj.category.replace('_', ' ').title()
 
