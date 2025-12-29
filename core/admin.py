@@ -1,22 +1,22 @@
 from django.contrib import admin
-from .models import Translation, UserTranslationHistory, UserSubmission
+from .models import Translation, UserTranslationHistory, UserSubmission, Category
 
 # Register your models here.
 
 @admin.register(Translation)
 class TranslationAdmin(admin.ModelAdmin):
-    list_display = ('english_text_short', 'marshallese_text_short', 'category', 'usage_count', 'is_favorite', 'is_sample', 'created_date')
-    list_filter = ('category', 'is_favorite', 'is_sample', 'created_date')
-    search_fields = ('english_text', 'marshallese_text', 'description')
+    list_display = ('id', 'english_text_short', 'marshallese_text_short', 'category_name', 'usage_count', 'is_favorite', 'created_date')
+    list_filter = ('category', 'is_favorite', 'created_date')
+    search_fields = ('^english_text',)
     readonly_fields = ('created_date', 'updated_date', 'usage_count')
     ordering = ('-created_date',)
     
     fieldsets = (
         ('Translation', {
-            'fields': ('english_text', 'marshallese_text', 'category', 'description')
+            'fields': ('english_text', 'marshallese_text', 'category', 'context')
         }),
         ('Metadata', {
-            'fields': ('is_favorite', 'is_sample', 'usage_count', 'created_by')
+            'fields': ('is_favorite', 'usage_count', 'created_by')
         }),
         ('Timestamps', {
             'fields': ('created_date', 'updated_date'),
@@ -31,11 +31,15 @@ class TranslationAdmin(admin.ModelAdmin):
     def marshallese_text_short(self, obj):
         return obj.marshallese_text[:50] + '...' if len(obj.marshallese_text) > 50 else obj.marshallese_text
     marshallese_text_short.short_description = 'Marshallese'
+    
+    def category_name(self, obj):
+        return obj.category.name if obj.category else '-'
+    category_name.short_description = 'Category'
 
 
 @admin.register(UserTranslationHistory)
 class UserTranslationHistoryAdmin(admin.ModelAdmin):
-    list_display = ('user_email', 'original_short', 'translated_short', 'source', 'confidence', 'admin_review', 'is_reviewed', 'is_favorite', 'created_date')
+    list_display = ('id', 'user_email', 'original_short', 'translated_short', 'source', 'confidence', 'admin_review', 'is_reviewed', 'is_favorite', 'created_date')
     list_filter = ('source', 'confidence', 'admin_review', 'is_reviewed', 'is_favorite', 'created_date', 'user')
     search_fields = ('original_text', 'translated_text', 'user__email')
     readonly_fields = ('created_date', 'updated_date')
@@ -75,7 +79,7 @@ class UserTranslationHistoryAdmin(admin.ModelAdmin):
 
 @admin.register(UserSubmission)
 class UserSubmissionAdmin(admin.ModelAdmin):
-    list_display = ('user_email', 'source_text_short', 'known_translation_short', 'category', 'status', 'created_date')
+    list_display = ('id', 'user_email', 'source_text_short', 'known_translation_short', 'category_name', 'status', 'created_date')
     list_filter = ('status', 'category', 'created_date', 'user')
     search_fields = ('source_text', 'known_translation', 'user__email', 'notes')
     readonly_fields = ('created_date', 'updated_date')
@@ -112,6 +116,10 @@ class UserSubmissionAdmin(admin.ModelAdmin):
             return '-'
         return obj.known_translation[:50] + '...' if len(obj.known_translation) > 50 else obj.known_translation
     known_translation_short.short_description = 'Known Translation'
+    
+    def category_name(self, obj):
+        return obj.category.name if obj.category else '-'
+    category_name.short_description = 'Category'
     
     def approve_submissions(self, request, queryset):
         """Approve selected submissions and add to Translation database"""
@@ -152,3 +160,21 @@ class UserSubmissionAdmin(admin.ModelAdmin):
         
         self.message_user(request, f'{rejected_count} submission(s) rejected.')
     reject_submissions.short_description = 'Reject selected submissions'
+
+
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'context', 'created_date')
+    search_fields = ('name', 'context')
+    readonly_fields = ('created_date', 'updated_date')
+    ordering = ('name',)
+    
+    fieldsets = (
+        ('Category Information', {
+            'fields': ('name', 'context')
+        }),
+        ('Timestamps', {
+            'fields': ('created_date', 'updated_date'),
+            'classes': ('collapse',)
+        }),
+    )

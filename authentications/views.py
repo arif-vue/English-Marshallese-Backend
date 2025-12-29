@@ -23,16 +23,26 @@ from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+import os
 import random
 import stripe
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-def error_response(code, message="Error", details=None):
+def success_response(message, data=None, code=200):
+    """Standard success response format"""
     return Response({
-        "error": True,
+        "success": True,
         "message": message,
-        "details": details or {}
+        "data": data
+    }, status=code)
+
+def error_response(message, errors=None, code=400):
+    """Standard error response format"""
+    return Response({
+        "success": False,
+        "message": message,
+        "errors": errors or {}
     }, status=code)
 
 def generate_otp():
@@ -109,15 +119,19 @@ def register_user(request):
                 send_otp_email(email=user.email, otp=otp)
             except Exception as e:
                 return error_response(
-                    code=500,
                     message="Failed to send OTP email",
-                    details={"error": [str(e)]}
+                    errors={"error": [str(e)]},
+                    code=500
                 )
-        return Response({
-            "message": "User registered. Please verify your email with the OTP sent",
-            "user": serializer.data
-        }, status=status.HTTP_201_CREATED)
-    return error_response(code=400, details=serializer.errors)
+        return success_response(
+            message="User registered. Please verify your email with the OTP sent",
+            data={"user": serializer.data},
+            code=status.HTTP_201_CREATED
+        )
+    return error_response(
+        message="Registration failed",
+        errors=serializer.errors
+    )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -135,25 +149,46 @@ def login(request):
                 full_name=user.email.split('@')[0]
             )
         profile_serializer = UserProfileSerializer(profile)
-        return Response({
-            "access_token": str(refresh.access_token),
-            "refresh_token": str(refresh),
-            "role": user.role,
-            "is_verified" : is_verified,
-            "profile": profile_serializer.data
-        }, status=status.HTTP_200_OK)
-    return error_response(code=401, details=serializer.errors)
+        return success_response(
+            message="Login successful",
+            data={
+                "access_token": str(refresh.access_token),
+                "refresh_token": str(refresh),
+                "role": user.role,
+                "is_verified": is_verified,
+                "profile": profile_serializer.data
+            }
+        )
+    return error_response(
+        message="Invalid credentials",
+        errors=serializer.errors,
+        code=401
+    )
 
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
 def list_users(request):
     users = User.objects.all()
     serializer = CustomUserSerializer(users, many=True)
-    return Response(serializer.data)
+    return success_response(
+        message="Users retrieved successfully",
+        data=serializer.data
+    )
 
-@api_view(['GET', 'PUT'])
+@api_view(['GET', 'PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def user_profile(request):
+    """
+    Get or update user profile
+    GET /api/auth/profile/
+    PUT/PATCH /api/auth/profile/
+    
+    Body (for PUT/PATCH):
+    - full_name: string
+    - profile_picture: file (multipart/form-data)
+    
+    Returns user profile with full_name, email, and profile_picture
+    """
     try:
         profile = request.user.user_profile
     except UserProfile.DoesNotExist:
@@ -165,14 +200,35 @@ def user_profile(request):
     if request.method == 'GET':
         user = CustomUser.objects.get(id=request.user.id)
         serializer = CustomUserSerializer(user)
-        return Response(serializer.data)
+        return success_response(
+            message="Profile retrieved successfully",
+            data=serializer.data
+        )
 
-    if request.method == 'PUT':
+    if request.method in ['PUT', 'PATCH']:
+        # Handle file upload with request.FILES
         serializer = UserProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
+            # Delete old profile picture if a new one is uploaded
+            if 'profile_picture' in request.FILES and profile.profile_picture:
+                # Delete old file from storage
+                if os.path.isfile(profile.profile_picture.path):
+                    os.remove(profile.profile_picture.path)
+            
             serializer.save()
-            return Response(serializer.data)
-        return error_response(code=400, details=serializer.errors)
+            
+            # Return updated user data with profile
+            user = CustomUser.objects.get(id=request.user.id)
+            user_serializer = CustomUserSerializer(user)
+            
+            return success_response(
+                message="Profile updated successfully",
+                data=user_serializer.data
+            )
+        return error_response(
+            message="Profile update failed",
+            errors=serializer.errors
+        )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -180,21 +236,22 @@ def create_otp(request):
     email = request.data.get('email')
     if not email:
         return error_response(
-            code=400,
-            details={"email": ["This field is required"]}
+            message="Validation error",
+            errors={"email": ["This field is required"]}
         )
     
     try:
         user = User.objects.get(email=email)
         if user.is_verified:
             return error_response(
-                code=400,
-                details={"email": ["This account is already verified"]}
+                message="Account already verified",
+                errors={"email": ["This account is already verified"]}
             )
     except User.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No user exists with this email"]}
+            message="User not found",
+            errors={"email": ["No user exists with this email"]},
+            code=404
         )
     
     otp = generate_otp()
@@ -207,12 +264,18 @@ def create_otp(request):
             send_otp_email(email=email, otp=otp)
         except Exception as e:
             return error_response(
-                code=500,
                 message="Failed to send OTP email",
-                details={"error": [str(e)]}
+                errors={"error": [str(e)]},
+                code=500
             )
-        return Response({"message": "OTP sent to your email"}, status=status.HTTP_201_CREATED)
-    return error_response(code=400, details=serializer.errors)
+        return success_response(
+            message="OTP sent to your email",
+            code=201
+        )
+    return error_response(
+        message="Failed to create OTP",
+        errors=serializer.errors
+    )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -221,30 +284,37 @@ def verify_otp_reset(request):
     otp_value = request.data.get('otp')
     
     if not email or not otp_value:
-        details = {}
+        errors = {}
         if not email:
-            details["email"] = ["This field is required"]
+            errors["email"] = ["This field is required"]
         if not otp_value:
-            details["otp"] = ["This field is required"]
-        return error_response(code=400, details=details)
+            errors["otp"] = ["This field is required"]
+        return error_response(
+            message="Validation error",
+            errors=errors
+        )
     
     try:
         otp_obj = OTP.objects.get(email=email)
         if otp_obj.otp != otp_value:
             return error_response(
-                code=400,
-                details={"otp": ["The provided OTP is invalid"]}
+                message="Invalid OTP",
+                errors={"otp": ["The provided OTP is invalid"]}
             )
         if otp_obj.is_expired():
             return error_response(
-                code=400,
-                details={"otp": ["The OTP has expired"]}
+                message="OTP expired",
+                errors={"otp": ["The OTP has expired"]}
             )
-        return Response({"message": "OTP verified successfully"})
+        return success_response(
+            message="OTP verified successfully"
+        )
     except OTP.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No OTP found for this email"]})
+            message="OTP not found",
+            errors={"email": ["No OTP found for this email"]},
+            code=404
+        )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -253,24 +323,27 @@ def verify_otp(request):
     otp_value = request.data.get('otp')
     
     if not email or not otp_value:
-        details = {}
+        errors = {}
         if not email:
-            details["email"] = ["This field is required"]
+            errors["email"] = ["This field is required"]
         if not otp_value:
-            details["otp"] = ["This field is required"]
-        return error_response(code=400, details=details)
+            errors["otp"] = ["This field is required"]
+        return error_response(
+            message="Validation error",
+            errors=errors
+        )
     
     try:
         otp_obj = OTP.objects.get(email=email)
         if otp_obj.otp != otp_value:
             return error_response(
-                code=400,
-                details={"otp": ["The provided OTP is invalid"]}
+                message="Invalid OTP",
+                errors={"otp": ["The provided OTP is invalid"]}
             )
         if otp_obj.is_expired():
             return error_response(
-                code=400,
-                details={"otp": ["The OTP has expired"]}
+                message="OTP expired",
+                errors={"otp": ["The OTP has expired"]}
             )
         
         # Verify the user
@@ -278,22 +351,26 @@ def verify_otp(request):
             user = User.objects.get(email=email)
             if user.is_verified:
                 return error_response(
-                    code=400,
-                    details={"email": ["This account is already verified"]}
+                    message="Account already verified",
+                    errors={"email": ["This account is already verified"]}
                 )
             user.is_verified = True
             user.save()
             otp_obj.delete()
-            return Response({"message": "Email verified successfully. You can now log in"})
+            return success_response(
+                message="Email verified successfully. You can now log in"
+            )
         except User.DoesNotExist:
             return error_response(
-                code=404,
-                details={"email": ["No user exists with this email"]}
+                message="User not found",
+                errors={"email": ["No user exists with this email"]},
+                code=404
             )
     except OTP.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No OTP found for this email"]}
+            message="OTP not found",
+            errors={"email": ["No OTP found for this email"]},
+            code=404
         )
 
 @api_view(['POST'])
@@ -302,21 +379,22 @@ def request_password_reset(request):
     email = request.data.get('email')
     if not email:
         return error_response(
-            code=400,
-            details={"email": ["This field is required"]}
+            message="Validation error",
+            errors={"email": ["This field is required"]}
         )
     
     try:
         user = User.objects.get(email=email)
         if not user.is_verified:
             return error_response(
-                code=400,
-                details={"email": ["Please verify your email before resetting your password"]}
+                message="Account not verified",
+                errors={"email": ["Please verify your email before resetting your password"]}
             )
     except User.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No user exists with this email"]}
+            message="User not found",
+            errors={"email": ["No user exists with this email"]},
+            code=404
         )
 
     otp = generate_otp()
@@ -329,12 +407,18 @@ def request_password_reset(request):
             send_otp_email(email=email, otp=otp)
         except Exception as e:
             return error_response(
-                code=500,
                 message="Failed to send OTP email",
-                details={"error": [str(e)]}
+                errors={"error": [str(e)]},
+                code=500
             )
-        return Response({"message": "OTP sent to your email"}, status=status.HTTP_201_CREATED)
-    return error_response(code=400, details=serializer.errors)
+        return success_response(
+            message="OTP sent to your email",
+            code=201
+        )
+    return error_response(
+        message="Failed to create OTP",
+        errors=serializer.errors
+    )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -344,49 +428,55 @@ def reset_password(request):
     new_password = request.data.get('new_password')
 
     if not all([email, otp_value, new_password]):
-        details = {}
+        errors = {}
         if not email:
-            details["email"] = ["This field is required"]
-        
+            errors["email"] = ["This field is required"]
         if not new_password:
-            details["new_password"] = ["This field is required"]
-        return error_response(code=400, details=details)
+            errors["new_password"] = ["This field is required"]
+        return error_response(
+            message="Validation error",
+            errors=errors
+        )
 
     try:
         otp_obj = OTP.objects.get(email=email)
         if otp_obj.otp != otp_value:
             return error_response(
-                code=400,
-                details={"otp": ["The provided OTP is invalid"]}
+                message="Invalid OTP",
+                errors={"otp": ["The provided OTP is invalid"]}
             )
        
         user = User.objects.get(email=email)
         if not user.is_verified:
             return error_response(
-                code=400,
-                details={"email": ["Please verify your email before resetting your password"]}
+                message="Account not verified",
+                errors={"email": ["Please verify your email before resetting your password"]}
             )
         try:
             validate_password(new_password, user)
         except ValidationError as e:
             return error_response(
-                code=400,
-                details={"new_password": e.messages}
+                message="Password validation failed",
+                errors={"new_password": e.messages}
             )
 
         user.set_password(new_password)
         user.save()
         otp_obj.delete()
-        return Response({'message': 'Password reset successful'})
+        return success_response(
+            message="Password reset successful"
+        )
     except OTP.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No OTP found for this email"]}
+            message="OTP not found",
+            errors={"email": ["No OTP found for this email"]},
+            code=404
         )
     except User.DoesNotExist:
         return error_response(
-            code=404,
-            details={"email": ["No user exists with this email"]}
+            message="User not found",
+            errors={"email": ["No user exists with this email"]},
+            code=404
         )
 
 @api_view(['POST'])
@@ -396,31 +486,36 @@ def change_password(request):
     new_password = request.data.get('new_password')
 
     if not current_password or not new_password:
-        details = {}
+        errors = {}
         if not current_password:
-            details["current_password"] = ["This field is required"]
+            errors["current_password"] = ["This field is required"]
         if not new_password:
-            details["new_password"] = ["This field is required"]
-        return error_response(code=400, details=details)
+            errors["new_password"] = ["This field is required"]
+        return error_response(
+            message="Validation error",
+            errors=errors
+        )
 
     user = request.user
     if not user.check_password(current_password):
         return error_response(
-            code=400,
-            details={"current_password": ["The current password is incorrect"]}
+            message="Invalid password",
+            errors={"current_password": ["The current password is incorrect"]}
         )
 
     try:
         validate_password(new_password, user)
     except ValidationError as e:
         return error_response(
-            code=400,
-            details={"new_password": e.messages}
+            message="Password validation failed",
+            errors={"new_password": e.messages}
         )
 
     user.set_password(new_password)
     user.save()
-    return Response({'message': 'Password changed successfully'}, status=status.HTTP_200_OK)
+    return success_response(
+        message="Password changed successfully"
+    )
 
 
 
@@ -432,28 +527,28 @@ def refresh_token(request):
     """
     refresh_token = request.data.get('refresh_token')
     if not refresh_token:
-        return Response({
-            "error": True,
-            "message": "Refresh token is required"
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return error_response(
+            message="Refresh token is required",
+            errors={"refresh_token": ["This field is required"]}
+        )
 
     try:
         refresh = RefreshToken(refresh_token)
         new_access = str(refresh.access_token)
         new_refresh = str(refresh)  # new refresh token (if needed)
 
-        return Response({
-            
-            "message": "Token refreshed successfully",
-            "access_token": new_access,
-            "refresh_token": new_refresh
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message="Token refreshed successfully",
+            data={
+                "access_token": new_access,
+                "refresh_token": new_refresh
+            }
+        )
     except Exception as e:
-        return Response({
-            "error": True,
-            "message": "Failed to refresh token",
-            "details": str(e)
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return error_response(
+            message="Failed to refresh token",
+            errors={"token": [str(e)]}
+        )
 
 @api_view(['DELETE'])
 @permission_classes([IsAdminUser])
@@ -470,23 +565,23 @@ def delete_user(request, user_id):
         # Delete CustomUser (automatically deletes UserProfile due to CASCADE)
         user.delete()
         
-        return Response({
-            "error": False,
-            "message": f"User {user_name} ({email}) and their profile deleted successfully"
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message=f"User {user_name} ({email}) and their profile deleted successfully"
+        )
         
     except CustomUser.DoesNotExist:
         return error_response(
-            code=404,
             message="User not found",
-            details={"user_id": [f"No user found with ID {user_id}"]}
+            errors={"user_id": [f"No user found with ID {user_id}"]},
+            code=404
         )
     except Exception as e:
         return error_response(
-            code=500,
             message="Failed to delete user",
-            details={"error": [str(e)]}
+            errors={"error": [str(e)]},
+            code=500
         )
+
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
@@ -502,16 +597,15 @@ def delete_own_account(request):
         # Delete CustomUser (automatically deletes UserProfile due to CASCADE)
         user.delete()
         
-        return Response({
-            "error": False,
-            "message": f"Your account {user_name} ({email}) has been deleted successfully"
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message=f"Your account {user_name} ({email}) has been deleted successfully"
+        )
         
     except Exception as e:
         return error_response(
-            code=500,
             message="Failed to delete account",
-            details={"error": [str(e)]}
+            errors={"error": [str(e)]},
+            code=500
         )
 
 
@@ -523,11 +617,10 @@ def list_subscription_plans(request):
     """List all available subscription plans"""
     plans = SubscriptionPlan.objects.filter(is_active=True)
     serializer = SubscriptionPlanSerializer(plans, many=True)
-    return Response({
-        "error": False,
-        "message": "Subscription plans retrieved successfully",
-        "data": serializer.data
-    }, status=status.HTTP_200_OK)
+    return success_response(
+        message="Subscription plans retrieved successfully",
+        data=serializer.data
+    )
 
 
 @api_view(['POST'])
@@ -537,16 +630,16 @@ def create_subscription_plan(request):
     serializer = SubscriptionPlanSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save()
-        return Response({
-            "error": False,
-            "message": "Subscription plan created successfully",
-            "data": serializer.data
-        }, status=status.HTTP_201_CREATED)
+        return success_response(
+            message="Subscription plan created successfully",
+            data=serializer.data,
+            code=201
+        )
     return error_response(
-        code=400,
         message="Validation error",
-        details=serializer.errors
+        errors=serializer.errors
     )
+
 
 
 @api_view(['POST'])
@@ -556,9 +649,8 @@ def subscribe_user(request):
     serializer = SubscribeSerializer(data=request.data)
     if not serializer.is_valid():
         return error_response(
-            code=400,
             message="Validation error",
-            details=serializer.errors
+            errors=serializer.errors
         )
     
     plan_id = serializer.validated_data['plan_id']
@@ -589,22 +681,22 @@ def subscribe_user(request):
         
         response_serializer = UserSubscriptionSerializer(subscription)
         
-        return Response({
-            "error": False,
-            "message": f"Successfully subscribed to {plan.get_plan_type_display()} {plan.get_billing_cycle_display()} plan",
-            "data": response_serializer.data
-        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        return success_response(
+            message=f"Successfully subscribed to {plan.get_plan_type_display()} {plan.get_billing_cycle_display()} plan",
+            data=response_serializer.data,
+            code=201 if created else 200
+        )
         
     except SubscriptionPlan.DoesNotExist:
         return error_response(
-            code=404,
-            message="Subscription plan not found"
+            message="Subscription plan not found",
+            code=404
         )
     except Exception as e:
         return error_response(
-            code=500,
             message="Failed to create subscription",
-            details={"error": [str(e)]}
+            errors={"error": [str(e)]},
+            code=500
         )
 
 
@@ -615,17 +707,15 @@ def get_user_subscription(request):
     try:
         subscription = UserSubscription.objects.get(user=request.user)
         serializer = UserSubscriptionSerializer(subscription)
-        return Response({
-            "error": False,
-            "message": "Subscription details retrieved successfully",
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message="Subscription details retrieved successfully",
+            data=serializer.data
+        )
     except UserSubscription.DoesNotExist:
-        return Response({
-            "error": False,
-            "message": "No active subscription found",
-            "data": None
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message="No active subscription found",
+            data=None
+        )
 
 
 @api_view(['POST'])
@@ -639,15 +729,14 @@ def cancel_subscription(request):
         subscription.save()
         
         serializer = UserSubscriptionSerializer(subscription)
-        return Response({
-            "error": False,
-            "message": "Subscription cancelled successfully",
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message="Subscription cancelled successfully",
+            data=serializer.data
+        )
     except UserSubscription.DoesNotExist:
         return error_response(
-            code=404,
-            message="No subscription found to cancel"
+            message="No subscription found to cancel",
+            code=404
         )
 
 
@@ -693,25 +782,24 @@ def create_checkout_session(request, plan_id):
             customer_email=request.user.email,
         )
         
-        return Response({
-            "error": False,
-            "message": "Checkout session created successfully",
-            "data": {
+        return success_response(
+            message="Checkout session created successfully",
+            data={
                 "checkout_url": checkout_session.url,
                 "session_id": checkout_session.id
             }
-        }, status=status.HTTP_200_OK)
+        )
         
     except SubscriptionPlan.DoesNotExist:
         return error_response(
-            code=404,
-            message="Subscription plan not found"
+            message="Subscription plan not found",
+            code=404
         )
     except Exception as e:
         return error_response(
-            code=500,
             message="Failed to create checkout session",
-            details={"error": str(e)}
+            errors={"error": [str(e)]},
+            code=500
         )
 
 
@@ -723,11 +811,10 @@ def get_user_invoices(request):
     """Get all invoices for authenticated user"""
     invoices = Invoice.objects.filter(user=request.user)
     serializer = InvoiceSerializer(invoices, many=True)
-    return Response({
-        "error": False,
-        "message": "Invoices retrieved successfully",
-        "data": serializer.data
-    }, status=status.HTTP_200_OK)
+    return success_response(
+        message="Invoices retrieved successfully",
+        data=serializer.data
+    )
 
 
 @api_view(['GET'])
@@ -737,13 +824,12 @@ def get_invoice_detail(request, invoice_id):
     try:
         invoice = Invoice.objects.get(id=invoice_id, user=request.user)
         serializer = InvoiceSerializer(invoice)
-        return Response({
-            "error": False,
-            "message": "Invoice retrieved successfully",
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+        return success_response(
+            message="Invoice retrieved successfully",
+            data=serializer.data
+        )
     except Invoice.DoesNotExist:
         return error_response(
-            code=404,
-            message="Invoice not found"
+            message="Invoice not found",
+            code=404
         )

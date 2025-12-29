@@ -15,29 +15,31 @@ from .ai_service import translate_with_ai
 def success_response(message, data=None, code=200):
     """Standard success response format"""
     return Response({
-        "error": False,
+        "success": True,
         "message": message,
         "data": data
     }, status=code)
 
 
-def error_response(message, details=None, code=400):
+def error_response(message, errors=None, code=400):
     """Standard error response format"""
     return Response({
-        "error": True,
+        "success": False,
         "message": message,
-        "details": details or {}
+        "errors": errors or {}
     }, status=code)
 
 
 # ==================== TRANSLATION DETAIL WITH AI CONTEXT ====================
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def get_translation_detail(request, translation_id):
     """
     Get translation detail with AI context
-    GET /api/translations/{id}/
+    GET /api/core/{translation_id}/
+    
+    Requires authentication
     """
     try:
         translation = Translation.objects.get(id=translation_id)
@@ -134,6 +136,55 @@ def get_translations_by_category(request, category):
     )
 
 
+# ==================== SEARCH SUGGESTIONS ====================
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_search_suggestions(request):
+    """
+    Get search suggestions based on user input
+    GET /api/core/suggestions/?q=bo
+    GET /api/core/suggestions/?q=f&limit=5
+    
+    Returns up to 5 matching translations from database
+    """
+    query = request.query_params.get('q', '').strip()
+    limit = int(request.query_params.get('limit', 5))
+    
+    if not query:
+        return error_response(
+            message="Query parameter 'q' is required",
+            errors={"q": ["This field is required"]},
+            code=400
+        )
+    
+    # Search only English text (case-insensitive, starts with)
+    suggestions = Translation.objects.filter(
+        Q(english_text__istartswith=query)
+    ).order_by('english_text')[:limit]
+    
+    # Format suggestions
+    suggestion_data = [
+        {
+            "id": trans.id,
+            "english": trans.english_text,
+            "marshallese": trans.marshallese_text,
+            "category": trans.category.id,
+            "category_display": trans.category.name
+        }
+        for trans in suggestions
+    ]
+    
+    return success_response(
+        message=f"Found {len(suggestion_data)} suggestions",
+        data={
+            "query": query,
+            "suggestions": suggestion_data,
+            "total": len(suggestion_data)
+        }
+    )
+
+
 # ==================== SUBMISSION (User Contributions) ====================
 
 @api_view(['POST'])
@@ -174,37 +225,25 @@ def submit_translation(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_user_submissions(request, page=1):
+def get_user_submissions(request):
     """
-    Get user's submission list with pagination
+    Get user's submission list
     GET /api/core/submissions/
-    GET /api/core/submissions/page/2/
-    Default: 20 items per page
+    
+    Returns all user submissions
     """
     from .models import UserSubmission
     from .serializers import UserSubmissionSerializer
-    
-    limit = 20  # Items per page
-    offset = (page - 1) * limit
     
     submissions = UserSubmission.objects.filter(
         user=request.user
     ).order_by('-created_date')
     
-    total_count = submissions.count()
-    paginated_submissions = submissions[offset:offset+limit]
-    
-    serializer = UserSubmissionSerializer(paginated_submissions, many=True)
+    serializer = UserSubmissionSerializer(submissions, many=True)
     
     return success_response(
         message="Submissions retrieved successfully",
-        data={
-            "submissions": serializer.data,
-            "page": page,
-            "limit": limit,
-            "total": total_count,
-            "has_more": (offset + limit) < total_count
-        }
+        data=serializer.data
     )
 
 
@@ -270,43 +309,60 @@ def list_all_translations(request, page=1):
 # ==================== AI-POWERED TRANSLATION ====================
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def ai_translate(request):
     """
     AI-powered translation with database lookup and Gemini assistance
-    POST /api/translations/ai-translate/
+    POST /api/core/translation/
     {
-        "text": "I have a headache"
+        "text": "I have a headache",
+        "category": "symptoms"  // optional: common_phrases, questions, general, symptoms, body_parts, medication
     }
     
+    Requires authentication
     Returns translation with quality indicators and admin review flag
     """
     text = request.data.get('text', '').strip()
+    category = request.data.get('category', '').strip().lower()
     
     if not text:
         return error_response(
             message="Text is required",
-            details={"text": ["This field is required"]},
+            errors={"text": ["This field is required"]},
+            code=400
+        )
+    
+    # Validate category if provided
+    valid_categories = ['common_phrases', 'questions', 'general', 'symptoms', 'body_parts', 'medication']
+    if category and category not in valid_categories:
+        return error_response(
+            message="Invalid category",
+            errors={"category": [f"Category must be one of: {', '.join(valid_categories)}"]},
             code=400
         )
     
     # Call AI service
     result = translate_with_ai(text)
     
-    # Save to user's history if authenticated
-    history_id = None
-    if request.user.is_authenticated:
-        history = UserTranslationHistory.objects.create(
-            user=request.user,
-            original_text=text,
-            translated_text=result.get('translation', ''),
-            context=result.get('context', ''),
-            source=result.get('source', 'llm_generated'),
-            confidence=result.get('confidence', 'medium'),
-            admin_review=result.get('admin_review_needed', False),
-            is_favorite=False
-        )
-        history_id = history.id
+    # Override category if user provided one
+    if category:
+        result['category'] = category
+    # Otherwise, ensure category exists (from AI service auto-detection)
+    elif 'category' not in result:
+        result['category'] = 'general'
+    
+    # Save to user's history (user is always authenticated)
+    history = UserTranslationHistory.objects.create(
+        user=request.user,
+        original_text=text,
+        translated_text=result.get('translation', ''),
+        context=result.get('context', ''),
+        source=result.get('source', 'llm_generated'),
+        confidence=result.get('confidence', 'medium'),
+        admin_review=result.get('admin_review_needed', False),
+        is_favorite=False
+    )
+    history_id = history.id
     
     # Add history_id to response
     response_data = result.copy()
@@ -319,61 +375,50 @@ def ai_translate(request):
 
 
 
-# ==================== USER TRANSLATION HISTORY ====================
+# ==================== USER RECENT TRANSLATIONS ====================
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_user_history(request):
+def get_user_recent_translations(request):
     """
-    Get user's translation history
-    GET /api/core/history/
+    Get user's recent translations (all translation history)
+    GET /api/core/recent-translations/
+    
+    Returns all user's translation history ordered by most recent
     """
-    history = UserTranslationHistory.objects.filter(
+    recent_translations = UserTranslationHistory.objects.filter(
         user=request.user
-    ).order_by('-created_date')[:50]
+    ).order_by('-created_date')
     
     from .serializers import UserTranslationHistorySerializer
-    serializer = UserTranslationHistorySerializer(history, many=True)
+    serializer = UserTranslationHistorySerializer(recent_translations, many=True)
     
     return success_response(
-        message="Translation history retrieved successfully",
+        message="Recent translations retrieved successfully",
         data=serializer.data
     )
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_user_favorites(request, page=1):
+def get_user_favorites(request):
     """
-    Get user's favorite translations from history with pagination
+    Get user's favorite translations from history
     GET /api/core/myfavorites/
-    GET /api/core/myfavorites/page/1/
-    GET /api/core/myfavorites/page/2/
-    Default: 20 items per page
-    """
-    limit = 20  # Items per page
-    offset = (page - 1) * limit
     
+    Returns all user's favorite translations
+    """
     favorites = UserTranslationHistory.objects.filter(
         user=request.user,
         is_favorite=True
     ).order_by('-updated_date')
     
-    total_count = favorites.count()
-    paginated_favorites = favorites[offset:offset+limit]
-    
     from .serializers import UserTranslationHistorySerializer
-    serializer = UserTranslationHistorySerializer(paginated_favorites, many=True)
+    serializer = UserTranslationHistorySerializer(favorites, many=True)
     
     return success_response(
         message="Favorite translations retrieved successfully",
-        data={
-            "favorites": serializer.data,
-            "page": page,
-            "limit": limit,
-            "total": total_count,
-            "has_more": (offset + limit) < total_count
-        }
+        data=serializer.data
     )
 
 
@@ -443,187 +488,56 @@ def delete_user_favorite(request, history_id):
         )
 
 
-# ==================== ADMIN FEEDBACK / REVIEW ====================
+# ==================== USER AI TRANSLATION FEEDBACK ====================
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_admin_feedback_list(request, page=1):
+def get_user_ai_feedback(request):
     """
-    Get list of translations that need admin review (admin_review=True)
-    GET /api/core/admin-feedback/
-    GET /api/core/admin-feedback/page/2/
-    Default: 20 items per page
+    Get user's AI translation feedback list (translations that need admin review)
+    GET /api/core/my-ai-feedback/
     
-    Only admins and staff can access this endpoint
+    Shows user their own translations where admin_review=True
     """
-    # Check if user is admin or staff
-    if not request.user.is_staff:
-        return error_response(
-            message="Permission denied. Only admin users can access this endpoint.",
-            code=403
-        )
-    
-    limit = 20  # Items per page
-    offset = (page - 1) * limit
-    
-    # Get translations that need admin review
+    # Get user's translations that need admin review
     feedback_items = UserTranslationHistory.objects.filter(
+        user=request.user,
         admin_review=True
     ).order_by('-created_date')
     
-    total_count = feedback_items.count()
-    paginated_items = feedback_items[offset:offset+limit]
-    
     from .serializers import UserTranslationHistorySerializer
-    serializer = UserTranslationHistorySerializer(paginated_items, many=True)
+    serializer = UserTranslationHistorySerializer(feedback_items, many=True)
     
     return success_response(
-        message="Admin feedback list retrieved successfully",
-        data={
-            "feedback_items": serializer.data,
-            "page": page,
-            "limit": limit,
-            "total": total_count,
-            "has_more": (offset + limit) < total_count,
-            "pending_count": UserTranslationHistory.objects.filter(
-                admin_review=True,
-                is_reviewed=False
-            ).count()
-        }
+        message="AI translation feedback list retrieved successfully",
+        data=serializer.data
     )
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_admin_feedback_detail(request, history_id):
-    """
-    Get detailed view of a translation feedback item
-    GET /api/core/admin-feedback/{history_id}/
-    
-    Returns previous translation (AI generated) and current/updated translation
-    """
-    if not request.user.is_staff:
-        return error_response(
-            message="Permission denied. Only admin users can access this endpoint.",
-            code=403
-        )
-    
-    try:
-        feedback = UserTranslationHistory.objects.get(
-            id=history_id,
-            admin_review=True
-        )
-        
-        from .serializers import UserTranslationHistorySerializer
-        serializer = UserTranslationHistorySerializer(feedback)
-        
-        # Prepare response with previous and updated translations
-        data = serializer.data
-        data['previous_translation'] = {
-            'english': feedback.original_text,
-            'marshallese': feedback.translated_text,
-            'context': feedback.context
-        }
-        data['updated_translation'] = {
-            'english': feedback.original_text,
-            'marshallese': feedback.updated_translation if feedback.updated_translation else feedback.translated_text,
-            'context': feedback.context
-        }
-        
-        return success_response(
-            message="Feedback detail retrieved successfully",
-            data=data
-        )
-    except UserTranslationHistory.DoesNotExist:
-        return error_response(
-            message="Feedback item not found",
-            code=404
-        )
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def admin_approve_feedback(request, history_id):
-    """
-    Approve or update a translation feedback
-    POST /api/core/admin-feedback/{history_id}/approve/
-    
-    Body (optional):
-    {
-        "updated_marshallese": "New translation text"  # If admin wants to update
-    }
-    
-    If no update provided, approves the original translation as-is
-    If update provided, saves the new translation
-    """
-    if not request.user.is_staff:
-        return error_response(
-            message="Permission denied. Only admin users can access this endpoint.",
-            code=403
-        )
-    
-    try:
-        from django.utils import timezone
-        
-        feedback = UserTranslationHistory.objects.get(
-            id=history_id,
-            admin_review=True
-        )
-        
-        updated_marshallese = request.data.get('updated_marshallese', '').strip()
-        
-        # If admin provided an update, save it
-        if updated_marshallese:
-            feedback.updated_translation = updated_marshallese
-        
-        # Mark as reviewed
-        feedback.is_reviewed = True
-        feedback.reviewed_by = request.user
-        feedback.reviewed_date = timezone.now()
-        feedback.save()
-        
-        return success_response(
-            message="Translation approved successfully",
-            data={
-                "history_id": feedback.id,
-                "is_reviewed": feedback.is_reviewed,
-                "previous_translation": feedback.translated_text,
-                "updated_translation": feedback.updated_translation if feedback.updated_translation else feedback.translated_text
-            }
-        )
-    except UserTranslationHistory.DoesNotExist:
-        return error_response(
-            message="Feedback item not found",
-            code=404
-        )
 
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
-def delete_admin_feedback(request, history_id):
+def delete_user_ai_feedback(request, history_id):
     """
-    Delete a feedback item
-    DELETE /api/core/admin-feedback/{history_id}/
+    Delete user's AI translation feedback item
+    DELETE /api/core/my-ai-feedback/{history_id}/
     """
-    if not request.user.is_staff:
-        return error_response(
-            message="Permission denied. Only admin users can access this endpoint.",
-            code=403
-        )
-    
     try:
         feedback = UserTranslationHistory.objects.get(
             id=history_id,
+            user=request.user,
             admin_review=True
         )
         feedback.delete()
         
         return success_response(
-            message="Feedback item deleted successfully",
+            message="AI feedback item deleted successfully",
             data={"history_id": history_id}
         )
     except UserTranslationHistory.DoesNotExist:
         return error_response(
-            message="Feedback item not found",
+            message="AI feedback item not found",
             code=404
         )
+
+
+

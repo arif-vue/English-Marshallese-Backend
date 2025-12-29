@@ -53,7 +53,7 @@ admin.site.register(CustomUser, CustomUserAdmin)
 # Register other models
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ('user', 'full_name', 'phone_number')
+    list_display = ('id', 'user', 'full_name', 'phone_number')
     search_fields = ('user__email', 'full_name', 'phone_number', 'address')
     list_filter = ('joined_date',)
     fieldsets = (
@@ -70,14 +70,14 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 @admin.register(OTP)
 class OTPAdmin(admin.ModelAdmin):
-    list_display = ('email', 'otp', 'created_at', 'attempts')
+    list_display = ('id', 'email', 'otp', 'created_at', 'attempts')
     list_filter = ('created_at',)
     search_fields = ('email', 'otp')
 
 
 @admin.register(SubscriptionPlan)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
-    list_display = ('plan_type', 'billing_cycle', 'price', 'is_active', 'created_at')
+    list_display = ('id', 'plan_type', 'billing_cycle', 'price', 'is_active', 'created_at')
     list_filter = ('plan_type', 'billing_cycle', 'is_active')
     search_fields = ('plan_type',)
     ordering = ('plan_type', 'billing_cycle')
@@ -85,7 +85,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
 
 @admin.register(UserSubscription)
 class UserSubscriptionAdmin(admin.ModelAdmin):
-    list_display = ('user', 'plan', 'status', 'start_date', 'end_date', 'auto_renew')
+    list_display = ('id', 'user', 'plan', 'status', 'start_date', 'end_date', 'auto_renew')
     list_filter = ('status', 'auto_renew', 'start_date')
     search_fields = ('user__email',)
     ordering = ('-start_date',)
@@ -94,7 +94,7 @@ class UserSubscriptionAdmin(admin.ModelAdmin):
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ('invoice_number', 'user', 'amount', 'currency', 'payment_status', 'created_at', 'paid_at')
+    list_display = ('id', 'invoice_number', 'user', 'amount', 'currency', 'payment_status', 'created_at', 'paid_at')
     list_filter = ('payment_status', 'created_at', 'paid_at')
     search_fields = ('invoice_number', 'user__email', 'stripe_session_id')
     readonly_fields = ('invoice_number', 'created_at', 'paid_at')

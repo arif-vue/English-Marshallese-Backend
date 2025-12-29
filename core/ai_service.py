@@ -12,13 +12,17 @@ import google.generativeai as genai
 from .models import Translation
 
 
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', settings.GEMINI_API_KEY if hasattr(settings, 'GEMINI_API_KEY') else None)
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-else:
-    model = None
+# Configure Gemini API - Load from Django settings
+def get_gemini_model():
+    """Lazy load Gemini model with API key from Django settings"""
+    GEMINI_API_KEY = settings.GEMINI_API_KEY
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Using gemini-flash-latest: Alias to latest flash model
+        return genai.GenerativeModel('gemini-flash-latest')
+    return None
+
+model = get_gemini_model()
 
 
 def extract_keywords(text: str) -> List[str]:
@@ -362,6 +366,16 @@ Return in this EXACT JSON format:
         confidence = "medium"
         admin_review = True
     
+    # Step 7: Auto-detect category from matches
+    detected_category = 'general'
+    all_matches = exact_matches + fuzzy_matches
+    if all_matches:
+        # Get the most common category from matches
+        categories = [m.get('category', 'general') for m in all_matches]
+        if categories:
+            # Use the first match's category as the detected category
+            detected_category = categories[0] if categories[0] else 'general'
+    
     # Build detailed breakdown
     details = {
         "total_keywords": len(keywords),
@@ -384,6 +398,7 @@ Return in this EXACT JSON format:
         "context": context_desc,
         "source": source,
         "confidence": confidence,
+        "category": detected_category,
         "details": details,
         "admin_review_needed": admin_review,
         "notes": f"Translation quality: {confidence}. Admin review: {'Required' if admin_review else 'Not needed'}"

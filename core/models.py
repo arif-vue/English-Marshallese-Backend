@@ -6,25 +6,15 @@ from django.conf import settings
 class Translation(models.Model):
     """Model for English-Marshallese translations"""
     
-    CATEGORY_CHOICES = (
-        ('common_phrases', 'Common Phrases'),
-        ('questions', 'Questions'),
-        ('general', 'General'),
-        ('symptoms', 'Symptoms'),
-        ('body_parts', 'Body Parts'),
-        ('medication', 'Medication'),
-    )
-    
     # Translation fields
     english_text = models.TextField()
     marshallese_text = models.TextField()
-    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='general')
-    description = models.TextField(blank=True, null=True)
+    category = models.ForeignKey('Category', on_delete=models.PROTECT, related_name='translations')
+    context = models.TextField(blank=True, null=True)
     
     # User interaction fields
     is_favorite = models.BooleanField(default=False)
     usage_count = models.IntegerField(default=0)
-    is_sample = models.BooleanField(default=False)
     
     # Metadata fields
     created_by = models.ForeignKey(
@@ -121,15 +111,6 @@ class UserSubmission(models.Model):
         ('rejected', 'Rejected'),
     )
     
-    CATEGORY_CHOICES = (
-        ('common_phrases', 'Common Phrases'),
-        ('questions', 'Questions'),
-        ('general', 'General'),
-        ('symptoms', 'Symptoms'),
-        ('body_parts', 'Body Parts'),
-        ('medication', 'Medication'),
-    )
-    
     # User reference
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -140,7 +121,7 @@ class UserSubmission(models.Model):
     # Submission fields
     source_text = models.TextField()  # The English text
     known_translation = models.TextField(blank=True, null=True)  # Suggested Marshallese (optional)
-    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='general')
+    category = models.ForeignKey('Category', on_delete=models.PROTECT, related_name='submissions')
     notes = models.TextField(blank=True, null=True)  # Context or notes
     
     # Status
@@ -170,3 +151,20 @@ class UserSubmission(models.Model):
     
     def __str__(self):
         return f"{self.user.email}: {self.source_text[:30]} ({self.status})"
+
+
+class Category(models.Model):
+    """Model for translation categories"""
+    
+    name = models.CharField(max_length=100, unique=True)
+    context = models.TextField(blank=True, null=True)
+    created_date = models.DateTimeField(auto_now_add=True)
+    updated_date = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Category'
+        verbose_name_plural = 'Categories'
+    
+    def __str__(self):
+        return self.name

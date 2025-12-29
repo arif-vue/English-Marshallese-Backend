@@ -21,13 +21,12 @@ class CustomUserSerializer(serializers.ModelSerializer):
 
 class CustomUserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
-    confirm_password = serializers.CharField(write_only=True, required=True)
     full_name = serializers.CharField(write_only=True, required=True)
     email = serializers.EmailField(required=True)
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'password', 'confirm_password', 'full_name']
+        fields = ['id', 'email', 'password', 'full_name']
         extra_kwargs = {
             'email': {'required': True},
             'password': {'required': True}
@@ -39,15 +38,8 @@ class CustomUserCreateSerializer(serializers.ModelSerializer):
             errors['email'] = ['This field is required']
         if not data.get('password'):
             errors['password'] = ['This field is required']
-        if not data.get('confirm_password'):
-            errors['confirm_password'] = ['This field is required']
         if not data.get('full_name'):
             errors['full_name'] = ['This field is required']
-        
-        # Check if passwords match
-        if data.get('password') and data.get('confirm_password'):
-            if data['password'] != data['confirm_password']:
-                errors['confirm_password'] = ['Passwords do not match']
         
         if data.get('email') and User.objects.filter(email=data['email'], is_verified=True).exists():
             errors['email'] = ['A user with this email already exists']
@@ -58,7 +50,6 @@ class CustomUserCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         full_name = validated_data.pop('full_name')
-        validated_data.pop('confirm_password')  # Remove confirm_password before creating user
         
         # Always set role to 'user' for registration
         User.objects.filter(email=validated_data['email'], is_verified=False).delete()
