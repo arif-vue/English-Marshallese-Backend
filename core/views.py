@@ -91,16 +91,18 @@ def get_categories(request):
     GET /api/translations/categories/
     """
     from django.db.models import Count
+    from .models import Category
     
-    categories = Translation.objects.values('category').annotate(
-        count=Count('id')
-    ).order_by('category')
+    # Get categories with translation counts
+    categories = Category.objects.annotate(
+        count=Count('translations')
+    ).order_by('name')
     
     category_data = [
         {
-            'name': cat['category'],
-            'display_name': cat['category'].replace('_', ' ').title(),
-            'count': cat['count']
+            'id': cat.id,
+            'name': cat.name,
+            'count': cat.count
         }
         for cat in categories
     ]
@@ -161,7 +163,7 @@ def get_search_suggestions(request):
     # Search only English text (case-insensitive, starts with)
     suggestions = Translation.objects.filter(
         Q(english_text__istartswith=query)
-    ).order_by('english_text')[:limit]
+    ).select_related('category').order_by('english_text')[:limit]
     
     # Format suggestions
     suggestion_data = [
@@ -169,8 +171,8 @@ def get_search_suggestions(request):
             "id": trans.id,
             "english": trans.english_text,
             "marshallese": trans.marshallese_text,
-            "category": trans.category.id,
-            "category_display": trans.category.name
+            "category": trans.category.id if trans.category else None,
+            "category_display": trans.category.name if trans.category else None
         }
         for trans in suggestions
     ]
@@ -344,23 +346,24 @@ def ai_translate(request):
     # Call AI service
     result = translate_with_ai(text)
     
-    # Override category if user provided one
-    if category:
-        result['category'] = category
-    # Otherwise, ensure category exists (from AI service auto-detection)
-    elif 'category' not in result:
-        result['category'] = 'general'
+    # Get or create default General category
+    from .models import Category
+    try:
+        if category:
+            category_obj = Category.objects.get(name__iexact=category.replace('_', ' '))
+        else:
+            category_obj = Category.objects.get_or_create(name='General')[0]
+    except Category.DoesNotExist:
+        category_obj = Category.objects.get_or_create(name='General')[0]
     
     # Save to user's history (user is always authenticated)
     history = UserTranslationHistory.objects.create(
         user=request.user,
-        original_text=text,
-        translated_text=result.get('translation', ''),
-        context=result.get('context', ''),
-        source=result.get('source', 'llm_generated'),
-        confidence=result.get('confidence', 'medium'),
-        admin_review=result.get('admin_review_needed', False),
-        is_favorite=False
+        source_text=text,
+        known_translation=result.get('translation', ''),
+        category=category_obj,
+        notes=result.get('context', ''),
+        status='pending'
     )
     history_id = history.id
     
@@ -403,18 +406,18 @@ def get_user_recent_translations(request):
 @permission_classes([IsAuthenticated])
 def get_user_favorites(request):
     """
-    Get user's favorite translations from history
+    Get user's favorite translations
     GET /api/core/myfavorites/
     
-    Returns all user's favorite translations
+    Returns all translations marked as favorite by user
     """
-    favorites = UserTranslationHistory.objects.filter(
-        user=request.user,
+    # For now, return translations that are marked as favorite
+    # Note: In future, this could be moved to a UserFavorite junction table
+    favorites = Translation.objects.filter(
         is_favorite=True
-    ).order_by('-updated_date')
+    ).select_related('category').order_by('-updated_date')
     
-    from .serializers import UserTranslationHistorySerializer
-    serializer = UserTranslationHistorySerializer(favorites, many=True)
+    serializer = TranslationSerializer(favorites, many=True)
     
     return success_response(
         message="Favorite translations retrieved successfully",
@@ -426,38 +429,35 @@ def get_user_favorites(request):
 @permission_classes([IsAuthenticated])
 def toggle_user_favorite(request):
     """
-    Toggle favorite status for user's translation history
+    Toggle favorite status for a translation
     POST /api/core/myfavorites/toggle/
     {
-        "history_id": 1
+        "translation_id": 1
     }
     """
-    history_id = request.data.get('history_id')
+    translation_id = request.data.get('translation_id')
     
-    if not history_id:
+    if not translation_id:
         return error_response(
-            message="history_id is required",
+            message="translation_id is required",
             code=400
         )
     
     try:
-        history = UserTranslationHistory.objects.get(
-            id=history_id,
-            user=request.user
-        )
-        history.is_favorite = not history.is_favorite
-        history.save()
+        translation = Translation.objects.get(id=translation_id)
+        translation.is_favorite = not translation.is_favorite
+        translation.save()
         
         return success_response(
-            message=f"Translation {'added to' if history.is_favorite else 'removed from'} favorites",
+            message=f"Translation {'added to' if translation.is_favorite else 'removed from'} favorites",
             data={
-                "history_id": history.id,
-                "is_favorite": history.is_favorite
+                "translation_id": translation.id,
+                "is_favorite": translation.is_favorite
             }
         )
-    except UserTranslationHistory.DoesNotExist:
+    except Translation.DoesNotExist:
         return error_response(
-            message="Translation history not found",
+            message="Translation not found",
             code=404
         )
 
@@ -466,24 +466,24 @@ def toggle_user_favorite(request):
 @permission_classes([IsAuthenticated])
 def delete_user_favorite(request, history_id):
     """
-    Delete a favorite translation from user's history
-    DELETE /api/core/myfavorites/{history_id}/
+    Remove a translation from favorites (doesn't delete the translation)
+    DELETE /api/core/myfavorites/{translation_id}/
     """
     try:
-        history = UserTranslationHistory.objects.get(
+        translation = Translation.objects.get(
             id=history_id,
-            user=request.user,
             is_favorite=True
         )
-        history.delete()
+        translation.is_favorite = False
+        translation.save()
         
         return success_response(
-            message="Favorite deleted successfully",
-            data={"history_id": history_id}
+            message="Removed from favorites successfully",
+            data={"translation_id": history_id}
         )
-    except UserTranslationHistory.DoesNotExist:
+    except Translation.DoesNotExist:
         return error_response(
-            message="Favorite not found",
+            message="Favorite translation not found",
             code=404
         )
 
@@ -494,16 +494,15 @@ def delete_user_favorite(request, history_id):
 @permission_classes([IsAuthenticated])
 def get_user_ai_feedback(request):
     """
-    Get user's AI translation feedback list (translations that need admin review)
+    Get user's AI translation feedback list
     GET /api/core/my-ai-feedback/
     
-    Shows user their own translations where admin_review=True
+    Shows user their own AI translation history
     """
-    # Get user's translations that need admin review
+    # Get user's translations
     feedback_items = UserTranslationHistory.objects.filter(
-        user=request.user,
-        admin_review=True
-    ).order_by('-created_date')
+        user=request.user
+    ).select_related('category').order_by('-created_date')
     
     from .serializers import UserTranslationHistorySerializer
     serializer = UserTranslationHistorySerializer(feedback_items, many=True)
@@ -524,8 +523,7 @@ def delete_user_ai_feedback(request, history_id):
     try:
         feedback = UserTranslationHistory.objects.get(
             id=history_id,
-            user=request.user,
-            admin_review=True
+            user=request.user
         )
         feedback.delete()
         

@@ -44,4 +44,9 @@ urlpatterns = [
     path('categories/add/', views.add_category, name='admin_add_category'),
     path('categories/<int:category_id>/update/', views.update_category, name='admin_update_category'),
     path('categories/<int:category_id>/delete/', views.delete_category, name='admin_delete_category'),
+    
+    # Content Management
+    path('terms-service/', views.get_or_update_terms, name='terms_service'),
+    path('privacy-policy/', views.get_or_update_privacy, name='privacy_policy'),
+    path('about-us/', views.get_or_update_about, name='about_us'),
 ]

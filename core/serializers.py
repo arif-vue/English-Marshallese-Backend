@@ -89,69 +89,30 @@ class RecentTranslationSerializer(serializers.ModelSerializer):
 
 
 class UserTranslationHistorySerializer(serializers.ModelSerializer):
-    """Serializer for User Translation History"""
+    """Serializer for AI Translation Feedback"""
     user_email = serializers.EmailField(source='user.email', read_only=True)
-    category = serializers.SerializerMethodField()
-    category_display = serializers.SerializerMethodField()
+    category_details = CategoryNestedSerializer(source='category', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    created_date = serializers.DateTimeField(format="%d-%m-%Y", read_only=True)
+    updated_date = serializers.DateTimeField(format="%d-%m-%Y", read_only=True)
     
     class Meta:
         model = UserTranslationHistory
         fields = [
             'id',
             'user_email',
-            'original_text',
-            'translated_text',
-            'context',
-            'source',
-            'confidence',
-            'is_favorite',
+            'source_text',
+            'known_translation',
             'category',
-            'category_display',
-            'admin_review',
-            'is_reviewed',
-            'updated_translation',
+            'category_details',
+            'notes',
+            'status',
+            'status_display',
+            'admin_notes',
             'created_date',
             'updated_date'
         ]
-        read_only_fields = ['id', 'user_email', 'created_date', 'updated_date']
-    
-    def get_category(self, obj):
-        """Extract category from context or derive from translation"""
-        # Try to extract category from context
-        if obj.context:
-            context_lower = obj.context.lower()
-            if 'body part' in context_lower or 'anatomical' in context_lower:
-                return 'body_parts'
-            elif 'symptom' in context_lower or 'health condition' in context_lower:
-                return 'symptoms'
-            elif 'medication' in context_lower or 'pharmaceutical' in context_lower:
-                return 'medication'
-            elif 'common phrase' in context_lower or 'daily conversation' in context_lower:
-                return 'common_phrases'
-            elif 'question' in context_lower:
-                return 'questions'
-        
-        # Try to find matching translation in database
-        try:
-            from .models import Translation
-            translation = Translation.objects.filter(
-                Q(english_text__iexact=obj.original_text) | 
-                Q(marshallese_text__iexact=obj.translated_text)
-            ).first()
-            if translation:
-                return translation.category.name if translation.category else 'general'
-        except:
-            pass
-        
-        return 'general'
-    
-    def get_category_display(self, obj):
-        """Get human-readable category name"""
-        category = self.get_category(obj)
-        # Category is already a clean name from Category.name, no need to process
-        if isinstance(category, str) and '_' in category:
-            return category.replace('_', ' ').title()
-        return category if isinstance(category, str) else str(category)
+        read_only_fields = ['id', 'user_email', 'status', 'admin_notes', 'created_date', 'updated_date', 'category_details']
 
 
 class UserSubmissionSerializer(serializers.ModelSerializer):
@@ -159,6 +120,8 @@ class UserSubmissionSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source='user.email', read_only=True)
     category_details = CategoryNestedSerializer(source='category', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    created_date = serializers.DateTimeField(format="%d-%m-%Y", read_only=True)
+    updated_date = serializers.DateTimeField(format="%d-%m-%Y", read_only=True)
     
     class Meta:
         model = UserSubmission

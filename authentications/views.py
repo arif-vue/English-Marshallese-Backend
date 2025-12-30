@@ -199,7 +199,7 @@ def user_profile(request):
 
     if request.method == 'GET':
         user = CustomUser.objects.get(id=request.user.id)
-        serializer = CustomUserSerializer(user)
+        serializer = CustomUserSerializer(user, context={'request': request})
         return success_response(
             message="Profile retrieved successfully",
             data=serializer.data
@@ -219,7 +219,7 @@ def user_profile(request):
             
             # Return updated user data with profile
             user = CustomUser.objects.get(id=request.user.id)
-            user_serializer = CustomUserSerializer(user)
+            user_serializer = CustomUserSerializer(user, context={'request': request})
             
             return success_response(
                 message="Profile updated successfully",

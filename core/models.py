@@ -46,13 +46,11 @@ class Translation(models.Model):
 
 
 class UserTranslationHistory(models.Model):
-    """Model for user's personal translation history and favorites"""
+    """Model for AI translation feedback requiring admin review"""
     
-    SOURCE_CHOICES = (
-        ('exact_match', 'Exact Match'),
-        ('fuzzy_match', 'Fuzzy Match'),
-        ('combined', 'Combined'),
-        ('llm_generated', 'LLM Generated'),
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('updated', 'Updated'),
     )
     
     # User reference
@@ -62,17 +60,19 @@ class UserTranslationHistory(models.Model):
         related_name='translation_history'
     )
     
-    # Translation data (from AI response)
-    original_text = models.TextField()  # What user typed
-    translated_text = models.TextField()  # Translation result
-    context = models.TextField(blank=True, null=True)  # AI context
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='llm_generated')
-    confidence = models.CharField(max_length=10, default='medium')
+    # Feedback fields
+    source_text = models.TextField()  # The English text
+    known_translation = models.TextField(blank=True, null=True)  # AI generated Marshallese
+    category = models.ForeignKey('Category', on_delete=models.PROTECT, related_name='ai_feedback')
+    notes = models.TextField(blank=True, null=True)  # Context or notes
     
-    # Admin review
-    admin_review = models.BooleanField(default=False)  # Flag for admin review needed
-    is_reviewed = models.BooleanField(default=False)  # Whether admin has reviewed
-    updated_translation = models.TextField(blank=True, null=True)  # Admin's updated translation
+    # Status
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    admin_notes = models.TextField(blank=True, null=True)  # Admin feedback
+    
+    # Metadata
+    created_date = models.DateTimeField(auto_now_add=True)
+    updated_date = models.DateTimeField(auto_now=True)
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -82,33 +82,25 @@ class UserTranslationHistory(models.Model):
     )
     reviewed_date = models.DateTimeField(null=True, blank=True)
     
-    # User interaction
-    is_favorite = models.BooleanField(default=False)
-    
-    # Metadata
-    created_date = models.DateTimeField(auto_now_add=True)
-    updated_date = models.DateTimeField(auto_now=True)
-    
     class Meta:
         ordering = ['-created_date']
         indexes = [
-            models.Index(fields=['user', 'is_favorite']),
-            models.Index(fields=['user', '-created_date']),
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['status', '-created_date']),
         ]
         verbose_name = 'User Translation History'
         verbose_name_plural = 'User Translation Histories'
     
     def __str__(self):
-        return f"{self.user.email}: {self.original_text[:30]} → {self.translated_text[:30]}"
+        return f"{self.user.email}: {self.source_text[:30]} ({self.status})"
 
 
 class UserSubmission(models.Model):
     """Model for user-submitted translations pending admin review"""
     
     STATUS_CHOICES = (
-        ('pending', 'Pending Review'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
+        ('pending', 'Pending'),
+        ('updated', 'Updated'),
     )
     
     # User reference

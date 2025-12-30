@@ -1,12 +1,12 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Count
 from django.db.models.functions import TruncMonth, TruncYear
 from datetime import datetime, timedelta
-from .models import RecentActivity
-from .serializers import RecentActivitySerializer
+from .models import RecentActivity, TermsAndService, PrivacyPolicy, AboutUs
+from .serializers import RecentActivitySerializer, TermsAndServiceSerializer, PrivacyPolicySerializer, AboutUsSerializer
 
 
 def success_response(message, data=None, code=200):
@@ -63,10 +63,7 @@ def get_dashboard_stats(request):
     pending_submissions = UserSubmission.objects.filter(status='pending').count()
     
     # AI feedback needing review
-    ai_feedback_count = UserTranslationHistory.objects.filter(
-        admin_review=True,
-        is_reviewed=False
-    ).count()
+    ai_feedback_count = UserTranslationHistory.objects.filter(status='pending').count()
     
     return success_response(
         message="Dashboard stats retrieved successfully",
@@ -216,9 +213,15 @@ def delete_recent_activity(request, activity_id):
 @permission_classes([IsAuthenticated])
 def get_all_user_submissions(request, page=1):
     """
-    Get all user submissions (from all users) with pagination
+    Get all user submissions (from all users) with pagination and search
     GET /api/administration/submissions/
     GET /api/administration/submissions/page/2/
+    GET /api/administration/submissions/?search=headache
+    
+    Query Parameters:
+    - search: Search in source_text (case-insensitive)
+    - status: Filter by status (pending, updated)
+    
     Default: 20 items per page
     
     Only staff/admin users can access
@@ -231,11 +234,28 @@ def get_all_user_submissions(request, page=1):
     
     from core.models import UserSubmission
     from core.serializers import UserSubmissionSerializer
+    from django.db.models import Q
     
     limit = 20  # Items per page
     offset = (page - 1) * limit
     
-    submissions = UserSubmission.objects.all().order_by('-created_date')
+    # Start with all submissions
+    submissions = UserSubmission.objects.all()
+    
+    # Apply search filter on source_text
+    search_query = request.GET.get('search', '').strip()
+    if search_query:
+        submissions = submissions.filter(
+            Q(source_text__icontains=search_query)
+        )
+    
+    # Apply status filter
+    status = request.GET.get('status')
+    if status and status in ['pending', 'updated']:
+        submissions = submissions.filter(status=status)
+    
+    # Order by created_date
+    submissions = submissions.order_by('-created_date')
     
     total_count = submissions.count()
     paginated_submissions = submissions[offset:offset+limit]
@@ -250,7 +270,11 @@ def get_all_user_submissions(request, page=1):
             "limit": limit,
             "total": total_count,
             "has_more": (offset + limit) < total_count,
-            "pending_count": UserSubmission.objects.filter(status='pending').count()
+            "pending_count": UserSubmission.objects.filter(status='pending').count(),
+            "filters": {
+                "search": search_query,
+                "status": status
+            }
         }
     )
 
@@ -261,9 +285,15 @@ def get_all_user_submissions(request, page=1):
 @permission_classes([IsAuthenticated])
 def get_all_ai_feedback(request, page=1):
     """
-    Get all AI translation feedback (from all users) with pagination
+    Get all AI translation feedback (from all users) with pagination and search
     GET /api/administration/ai-feedback/
     GET /api/administration/ai-feedback/page/2/
+    GET /api/administration/ai-feedback/?search=pain
+    
+    Query Parameters:
+    - search: Search in original_text (case-insensitive)
+    - status: Filter by status (pending, updated)
+    
     Default: 20 items per page
     
     Only staff/admin users can access
@@ -276,14 +306,28 @@ def get_all_ai_feedback(request, page=1):
     
     from core.models import UserTranslationHistory
     from core.serializers import UserTranslationHistorySerializer
+    from django.db.models import Q
     
     limit = 20  # Items per page
     offset = (page - 1) * limit
     
-    # Get translations that need admin review
-    feedback_items = UserTranslationHistory.objects.filter(
-        admin_review=True
-    ).order_by('-created_date')
+    # Start with all feedback items
+    feedback_items = UserTranslationHistory.objects.all()
+    
+    # Apply search filter on source_text
+    search_query = request.GET.get('search', '').strip()
+    if search_query:
+        feedback_items = feedback_items.filter(
+            Q(source_text__icontains=search_query)
+        )
+    
+    # Apply status filter
+    status = request.GET.get('status')
+    if status and status in ['pending', 'updated']:
+        feedback_items = feedback_items.filter(status=status)
+    
+    # Order by created_date
+    feedback_items = feedback_items.order_by('-created_date')
     
     total_count = feedback_items.count()
     paginated_items = feedback_items[offset:offset+limit]
@@ -298,10 +342,11 @@ def get_all_ai_feedback(request, page=1):
             "limit": limit,
             "total": total_count,
             "has_more": (offset + limit) < total_count,
-            "pending_count": UserTranslationHistory.objects.filter(
-                admin_review=True,
-                is_reviewed=False
-            ).count()
+            "pending_count": UserTranslationHistory.objects.filter(status='pending').count(),
+            "filters": {
+                "search": search_query,
+                "status": status
+            }
         }
     )
 
@@ -313,7 +358,7 @@ def get_ai_feedback_detail(request, history_id):
     Get detailed view of an AI translation feedback item
     GET /api/administration/ai-feedback/{history_id}/
     
-    Returns previous translation (AI generated) and current/updated translation
+    Returns AI feedback detail for editing
     Only staff/admin users can access
     """
     if not request.user.is_staff:
@@ -326,29 +371,12 @@ def get_ai_feedback_detail(request, history_id):
     from core.serializers import UserTranslationHistorySerializer
     
     try:
-        feedback = UserTranslationHistory.objects.get(
-            id=history_id,
-            admin_review=True
-        )
-        
+        feedback = UserTranslationHistory.objects.get(id=history_id)
         serializer = UserTranslationHistorySerializer(feedback)
-        
-        # Prepare response with previous and updated translations
-        data = serializer.data
-        data['previous_translation'] = {
-            'english': feedback.original_text,
-            'marshallese': feedback.translated_text,
-            'context': feedback.context
-        }
-        data['updated_translation'] = {
-            'english': feedback.original_text,
-            'marshallese': feedback.updated_translation if feedback.updated_translation else feedback.translated_text,
-            'context': feedback.context
-        }
         
         return success_response(
             message="AI feedback detail retrieved successfully",
-            data=data
+            data=serializer.data
         )
     except UserTranslationHistory.DoesNotExist:
         return error_response(
@@ -432,12 +460,14 @@ def update_ai_feedback(request, history_id):
     
     Body:
     {
-        "updated_translation": "Updated Marshallese translation",
-        "context": "Updated context",
-        "is_reviewed": true  // optional
+        "source_text": "Updated English text",
+        "known_translation": "Updated Marshallese",
+        "category": 5,
+        "notes": "Updated context or notes"
     }
     
     Only staff/admin users can access
+    Status automatically changes to 'updated' when admin modifies the feedback
     """
     if not request.user.is_staff:
         return error_response(
@@ -445,34 +475,63 @@ def update_ai_feedback(request, history_id):
             code=403
         )
     
-    from core.models import UserTranslationHistory
+    from core.models import UserTranslationHistory, Category
     from core.serializers import UserTranslationHistorySerializer
     from django.utils import timezone
     
     try:
-        feedback = UserTranslationHistory.objects.get(
-            id=history_id,
-            admin_review=True
-        )
+        feedback = UserTranslationHistory.objects.get(id=history_id)
+        
+        # Track if any changes were made
+        changes_made = False
         
         # Update fields
-        if 'updated_translation' in request.data:
-            feedback.updated_translation = request.data['updated_translation']
-        if 'context' in request.data:
-            feedback.context = request.data['context']
-        if 'is_reviewed' in request.data:
-            feedback.is_reviewed = request.data['is_reviewed']
-            if request.data['is_reviewed']:
-                feedback.reviewed_by = request.user
-                feedback.reviewed_date = timezone.now()
+        if 'source_text' in request.data:
+            feedback.source_text = request.data['source_text']
+            changes_made = True
+        if 'known_translation' in request.data:
+            feedback.known_translation = request.data['known_translation']
+            changes_made = True
+        if 'category' in request.data:
+            category_id = request.data['category']
+            try:
+                category = Category.objects.get(id=category_id)
+                feedback.category = category
+                changes_made = True
+            except Category.DoesNotExist:
+                return error_response(
+                    message="Category not found",
+                    code=404
+                )
+        if 'notes' in request.data:
+            feedback.notes = request.data['notes']
+            changes_made = True
+        
+        # Automatically set status to 'updated' when admin makes changes
+        if changes_made:
+            feedback.status = 'updated'
+            feedback.reviewed_by = request.user
+            feedback.reviewed_date = timezone.now()
         
         feedback.save()
         
         # Create activity log
         RecentActivity.objects.create(
             activity_type='translation_reviewed',
-            description=f"AI feedback updated: {feedback.original_text[:50]}",
+            description=f"AI feedback updated: {feedback.source_text[:50]}",
             user=request.user
+        )
+        
+        serializer = UserTranslationHistorySerializer(feedback)
+        
+        return success_response(
+            message="AI feedback updated successfully",
+            data=serializer.data
+        )
+    except UserTranslationHistory.DoesNotExist:
+        return error_response(
+            message="AI feedback item not found",
+            code=404
         )
         
         serializer = UserTranslationHistorySerializer(feedback)
@@ -506,15 +565,13 @@ def delete_ai_feedback(request, history_id):
     from core.models import UserTranslationHistory
     
     try:
-        feedback = UserTranslationHistory.objects.get(
-            id=history_id,
-            admin_review=True
-        )
+        feedback = UserTranslationHistory.objects.get(id=history_id)
+        source_text = feedback.source_text
         feedback.delete()
         
         return success_response(
             message="AI feedback deleted successfully",
-            data={"history_id": history_id}
+            data={"history_id": history_id, "source_text": source_text}
         )
     except UserTranslationHistory.DoesNotExist:
         return error_response(
@@ -576,10 +633,19 @@ def get_all_users(request, page=1):
             full_name = profile.full_name if profile.full_name else '-'
             phone = profile.phone_number if profile.phone_number else '-'
             joined_date = profile.joined_date.strftime('%d-%m-%Y') if profile.joined_date else '-'
+            # Get profile picture URL
+            profile_picture = None
+            if profile.profile_picture:
+                try:
+                    if profile.profile_picture.storage.exists(profile.profile_picture.name):
+                        profile_picture = request.build_absolute_uri(profile.profile_picture.url)
+                except:
+                    pass
         except UserProfile.DoesNotExist:
             full_name = '-'
             phone = '-'
             joined_date = '-'
+            profile_picture = None
         
         # Get subscription
         try:
@@ -594,6 +660,7 @@ def get_all_users(request, page=1):
             'user_name': full_name,
             'user_email': user.email,
             'user_phone': phone,
+            'profile_picture': profile_picture,
             'joining_date': joined_date,
             'status': 'Active' if user.is_active else 'Inactive',
             'subscription': subscription_type
@@ -713,11 +780,11 @@ def update_submission(request, submission_id):
         "source_text": "Updated English text",
         "known_translation": "Updated Marshallese",
         "category": 5,
-        "notes": "Updated context or notes",
-        "status": "approved"  // optional: pending, approved, rejected
+        "notes": "Updated context or notes"
     }
     
     Only staff/admin users can access
+    Status automatically changes to 'updated' when admin modifies the submission
     """
     if not request.user.is_staff:
         return error_response(
@@ -732,16 +799,22 @@ def update_submission(request, submission_id):
     try:
         submission = UserSubmission.objects.get(id=submission_id)
         
+        # Track if any changes were made
+        changes_made = False
+        
         # Update fields
         if 'source_text' in request.data:
             submission.source_text = request.data['source_text']
+            changes_made = True
         if 'known_translation' in request.data:
             submission.known_translation = request.data['known_translation']
+            changes_made = True
         if 'category' in request.data:
             category_id = request.data['category']
             try:
                 category = Category.objects.get(id=category_id)
                 submission.category = category
+                changes_made = True
             except Category.DoesNotExist:
                 return error_response(
                     message="Category not found",
@@ -749,11 +822,13 @@ def update_submission(request, submission_id):
                 )
         if 'notes' in request.data:
             submission.notes = request.data['notes']
-        if 'status' in request.data:
-            submission.status = request.data['status']
-            if request.data['status'] in ['approved', 'rejected']:
-                submission.reviewed_by = request.user
-                submission.reviewed_date = timezone.now()
+            changes_made = True
+        
+        # Automatically set status to 'updated' when admin makes changes
+        if changes_made:
+            submission.status = 'updated'
+            submission.reviewed_by = request.user
+            submission.reviewed_date = timezone.now()
         
         submission.save()
         
@@ -1318,4 +1393,169 @@ def delete_category(request, category_id):
         return error_response(
             message="Category not found",
             code=404
+        )
+
+
+# ==================== TERMS AND SERVICE ====================
+
+@api_view(['GET', 'PUT'])
+@permission_classes([AllowAny])
+def get_or_update_terms(request):
+    """
+    Get or update Terms and Service content
+    GET /api/administration/terms-service/
+    PUT /api/administration/terms-service/
+    
+    Only admin can update
+    """
+    try:
+        terms = TermsAndService.objects.first()
+        if not terms:
+            terms = TermsAndService.objects.create(content="")
+        
+        if request.method == 'GET':
+            serializer = TermsAndServiceSerializer(terms)
+            return success_response(
+                message="Terms and Service retrieved successfully",
+                data=serializer.data
+            )
+        
+        elif request.method == 'PUT':
+            if not request.user.is_authenticated or not request.user.is_staff:
+                return error_response(
+                    message="Permission denied. Only admin users can update this content.",
+                    code=403
+                )
+            
+            content = request.data.get('content')
+            if content is None:
+                return error_response(
+                    message="Content field is required",
+                    code=400
+                )
+            
+            terms.content = content
+            terms.save()
+            
+            serializer = TermsAndServiceSerializer(terms)
+            return success_response(
+                message="Terms and Service updated successfully",
+                data=serializer.data
+            )
+    
+    except Exception as e:
+        return error_response(
+            message="An error occurred",
+            errors={"detail": str(e)},
+            code=500
+        )
+
+
+# ==================== PRIVACY POLICY ====================
+
+@api_view(['GET', 'PUT'])
+@permission_classes([AllowAny])
+def get_or_update_privacy(request):
+    """
+    Get or update Privacy Policy content
+    GET /api/administration/privacy-policy/
+    PUT /api/administration/privacy-policy/
+    
+    Only admin can update
+    """
+    try:
+        privacy = PrivacyPolicy.objects.first()
+        if not privacy:
+            privacy = PrivacyPolicy.objects.create(content="")
+        
+        if request.method == 'GET':
+            serializer = PrivacyPolicySerializer(privacy)
+            return success_response(
+                message="Privacy Policy retrieved successfully",
+                data=serializer.data
+            )
+        
+        elif request.method == 'PUT':
+            if not request.user.is_authenticated or not request.user.is_staff:
+                return error_response(
+                    message="Permission denied. Only admin users can update this content.",
+                    code=403
+                )
+            
+            content = request.data.get('content')
+            if content is None:
+                return error_response(
+                    message="Content field is required",
+                    code=400
+                )
+            
+            privacy.content = content
+            privacy.save()
+            
+            serializer = PrivacyPolicySerializer(privacy)
+            return success_response(
+                message="Privacy Policy updated successfully",
+                data=serializer.data
+            )
+    
+    except Exception as e:
+        return error_response(
+            message="An error occurred",
+            errors={"detail": str(e)},
+            code=500
+        )
+
+
+# ==================== ABOUT US ====================
+
+@api_view(['GET', 'PUT'])
+@permission_classes([AllowAny])
+def get_or_update_about(request):
+    """
+    Get or update About Us content
+    GET /api/administration/about-us/
+    PUT /api/administration/about-us/
+    
+    Only admin can update
+    """
+    try:
+        about = AboutUs.objects.first()
+        if not about:
+            about = AboutUs.objects.create(content="")
+        
+        if request.method == 'GET':
+            serializer = AboutUsSerializer(about)
+            return success_response(
+                message="About Us retrieved successfully",
+                data=serializer.data
+            )
+        
+        elif request.method == 'PUT':
+            if not request.user.is_authenticated or not request.user.is_staff:
+                return error_response(
+                    message="Permission denied. Only admin users can update this content.",
+                    code=403
+                )
+            
+            content = request.data.get('content')
+            if content is None:
+                return error_response(
+                    message="Content field is required",
+                    code=400
+                )
+            
+            about.content = content
+            about.save()
+            
+            serializer = AboutUsSerializer(about)
+            return success_response(
+                message="About Us updated successfully",
+                data=serializer.data
+            )
+    
+    except Exception as e:
+        return error_response(
+            message="An error occurred",
+            errors={"detail": str(e)},
+            code=500
         )

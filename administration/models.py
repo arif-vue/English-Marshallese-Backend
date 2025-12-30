@@ -32,3 +32,42 @@ class RecentActivity(models.Model):
     
     def __str__(self):
         return f"{self.activity_type}: {self.description[:50]}"
+
+
+class TermsAndService(models.Model):
+    """Model for Terms and Service content"""
+    content = models.TextField()
+    updated_date = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'Terms and Service'
+        verbose_name_plural = 'Terms and Service'
+    
+    def __str__(self):
+        return "Terms and Service"
+
+
+class PrivacyPolicy(models.Model):
+    """Model for Privacy Policy content"""
+    content = models.TextField()
+    updated_date = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'Privacy Policy'
+        verbose_name_plural = 'Privacy Policy'
+    
+    def __str__(self):
+        return "Privacy Policy"
+
+
+class AboutUs(models.Model):
+    """Model for About Us content"""
+    content = models.TextField()
+    updated_date = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'About Us'
+        verbose_name_plural = 'About Us'
+    
+    def __str__(self):
+        return "About Us"

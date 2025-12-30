@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import RecentActivity
+from .models import RecentActivity, TermsAndService, PrivacyPolicy, AboutUs
 
 # Register your models here.
 
@@ -34,3 +34,33 @@ class RecentActivityAdmin(admin.ModelAdmin):
     def user_email(self, obj):
         return obj.user.email if obj.user else '-'
     user_email.short_description = 'User'
+
+
+@admin.register(TermsAndService)
+class TermsAndServiceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'content_short', 'updated_date')
+    readonly_fields = ('updated_date',)
+    
+    def content_short(self, obj):
+        return obj.content[:100] + '...' if len(obj.content) > 100 else obj.content
+    content_short.short_description = 'Content'
+
+
+@admin.register(PrivacyPolicy)
+class PrivacyPolicyAdmin(admin.ModelAdmin):
+    list_display = ('id', 'content_short', 'updated_date')
+    readonly_fields = ('updated_date',)
+    
+    def content_short(self, obj):
+        return obj.content[:100] + '...' if len(obj.content) > 100 else obj.content
+    content_short.short_description = 'Content'
+
+
+@admin.register(AboutUs)
+class AboutUsAdmin(admin.ModelAdmin):
+    list_display = ('id', 'content_short', 'updated_date')
+    readonly_fields = ('updated_date',)
+    
+    def content_short(self, obj):
+        return obj.content[:100] + '...' if len(obj.content) > 100 else obj.content
+    content_short.short_description = 'Content'

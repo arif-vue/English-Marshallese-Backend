@@ -39,9 +39,9 @@ class TranslationAdmin(admin.ModelAdmin):
 
 @admin.register(UserTranslationHistory)
 class UserTranslationHistoryAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user_email', 'original_short', 'translated_short', 'source', 'confidence', 'admin_review', 'is_reviewed', 'is_favorite', 'created_date')
-    list_filter = ('source', 'confidence', 'admin_review', 'is_reviewed', 'is_favorite', 'created_date', 'user')
-    search_fields = ('original_text', 'translated_text', 'user__email')
+    list_display = ('id', 'user_email', 'source_short', 'translation_short', 'category_name', 'status', 'created_date')
+    list_filter = ('status', 'category', 'created_date', 'user')
+    search_fields = ('source_text', 'known_translation', 'user__email')
     readonly_fields = ('created_date', 'updated_date')
     ordering = ('-created_date',)
     
@@ -49,14 +49,11 @@ class UserTranslationHistoryAdmin(admin.ModelAdmin):
         ('User', {
             'fields': ('user',)
         }),
-        ('Translation', {
-            'fields': ('original_text', 'translated_text', 'context')
-        }),
-        ('Quality', {
-            'fields': ('source', 'confidence', 'is_favorite')
+        ('Feedback', {
+            'fields': ('source_text', 'known_translation', 'category', 'notes')
         }),
         ('Admin Review', {
-            'fields': ('admin_review', 'is_reviewed', 'updated_translation', 'reviewed_by', 'reviewed_date')
+            'fields': ('status', 'admin_notes', 'reviewed_by', 'reviewed_date')
         }),
         ('Timestamps', {
             'fields': ('created_date', 'updated_date'),
@@ -68,13 +65,19 @@ class UserTranslationHistoryAdmin(admin.ModelAdmin):
         return obj.user.email
     user_email.short_description = 'User'
     
-    def original_short(self, obj):
-        return obj.original_text[:40] + '...' if len(obj.original_text) > 40 else obj.original_text
-    original_short.short_description = 'Original'
+    def source_short(self, obj):
+        return obj.source_text[:50] + '...' if len(obj.source_text) > 50 else obj.source_text
+    source_short.short_description = 'English Text'
     
-    def translated_short(self, obj):
-        return obj.translated_text[:40] + '...' if len(obj.translated_text) > 40 else obj.translated_text
-    translated_short.short_description = 'Translation'
+    def translation_short(self, obj):
+        if obj.known_translation:
+            return obj.known_translation[:50] + '...' if len(obj.known_translation) > 50 else obj.known_translation
+        return '-'
+    translation_short.short_description = 'Marshallese'
+    
+    def category_name(self, obj):
+        return obj.category.name if obj.category else '-'
+    category_name.short_description = 'Category'
 
 
 @admin.register(UserSubmission)

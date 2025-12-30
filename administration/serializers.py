@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import RecentActivity
+from .models import RecentActivity, TermsAndService, PrivacyPolicy, AboutUs
 from django.utils import timezone
 from datetime import timedelta
 
@@ -56,3 +56,30 @@ class RecentActivitySerializer(serializers.ModelSerializer):
         else:
             weeks = int(seconds / 604800)
             return f"{weeks} week{'s' if weeks > 1 else ''} ago"
+
+
+class TermsAndServiceSerializer(serializers.ModelSerializer):
+    """Serializer for Terms and Service"""
+    
+    class Meta:
+        model = TermsAndService
+        fields = ['id', 'content', 'updated_date']
+        read_only_fields = ['id', 'updated_date']
+
+
+class PrivacyPolicySerializer(serializers.ModelSerializer):
+    """Serializer for Privacy Policy"""
+    
+    class Meta:
+        model = PrivacyPolicy
+        fields = ['id', 'content', 'updated_date']
+        read_only_fields = ['id', 'updated_date']
+
+
+class AboutUsSerializer(serializers.ModelSerializer):
+    """Serializer for About Us"""
+    
+    class Meta:
+        model = AboutUs
+        fields = ['id', 'content', 'updated_date']
+        read_only_fields = ['id', 'updated_date']

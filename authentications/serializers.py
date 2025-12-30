@@ -15,7 +15,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
     def get_user_profile(self, obj):
         try:
             profile = obj.user_profile
-            return UserProfileSerializer(profile).data
+            return UserProfileSerializer(profile, context=self.context).data
         except UserProfile.DoesNotExist:
             return None
 
@@ -84,11 +84,32 @@ class OTPSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     # Email is read-only and comes from the user model
     email = serializers.EmailField(source='user.email', read_only=True)
+    profile_picture_url = serializers.SerializerMethodField()
     
     class Meta:
         model = UserProfile
-        fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'joined_date']
-        read_only_fields = ['id', 'user', 'email', 'joined_date']
+        fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'profile_picture_url', 'joined_date']
+        read_only_fields = ['id', 'user', 'email', 'profile_picture_url', 'joined_date']
+
+    def get_profile_picture_url(self, obj):
+        if obj.profile_picture:
+            # Check if file actually exists
+            try:
+                if obj.profile_picture.storage.exists(obj.profile_picture.name):
+                    request = self.context.get('request')
+                    if request:
+                        return request.build_absolute_uri(obj.profile_picture.url)
+                    return obj.profile_picture.url
+            except:
+                pass
+        return None
+    
+    def to_representation(self, instance):
+        """Override to return profile_picture_url as profile_picture in response"""
+        representation = super().to_representation(instance)
+        # Replace profile_picture with the full URL
+        representation['profile_picture'] = representation.pop('profile_picture_url')
+        return representation
 
     def validate(self, data):
         errors = {}
