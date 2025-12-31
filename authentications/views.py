@@ -4,9 +4,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.views import APIView
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from .models import OTP, UserProfile, CustomUser, SubscriptionPlan, UserSubscription, Invoice
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 from .serializers import (
     CustomUserSerializer,
     CustomUserCreateSerializer,
@@ -139,6 +142,14 @@ def login(request):
     serializer = LoginSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.validated_data
+        
+        # Check if user is verified
+        if not user.is_verified:
+            return error_response(
+                message="Account not verified. Please verify your account with the OTP sent to your email.",
+                code=403
+            )
+        
         refresh = RefreshToken.for_user(user)
         try:
             is_verified = user.is_verified
@@ -206,29 +217,44 @@ def user_profile(request):
         )
 
     if request.method in ['PUT', 'PATCH']:
-        # Handle file upload with request.FILES
-        serializer = UserProfileSerializer(profile, data=request.data, partial=True)
-        if serializer.is_valid():
-            # Delete old profile picture if a new one is uploaded
-            if 'profile_picture' in request.FILES and profile.profile_picture:
-                # Delete old file from storage
-                if os.path.isfile(profile.profile_picture.path):
-                    os.remove(profile.profile_picture.path)
-            
-            serializer.save()
-            
-            # Return updated user data with profile
-            user = CustomUser.objects.get(id=request.user.id)
-            user_serializer = CustomUserSerializer(user, context={'request': request})
-            
-            return success_response(
-                message="Profile updated successfully",
-                data=user_serializer.data
+        try:
+            # Handle file upload with request.FILES
+            serializer = UserProfileSerializer(profile, data=request.data, partial=True)
+            if serializer.is_valid():
+                # Delete old profile picture if a new one is uploaded
+                if 'profile_picture' in request.FILES and profile.profile_picture:
+                    # Delete old file from storage
+                    if os.path.isfile(profile.profile_picture.path):
+                        os.remove(profile.profile_picture.path)
+                
+                serializer.save()
+                
+                # Return updated user data with profile
+                user = CustomUser.objects.get(id=request.user.id)
+                user_serializer = CustomUserSerializer(user, context={'request': request})
+                
+                return success_response(
+                    message="Profile updated successfully",
+                    data=user_serializer.data
+                )
+            return error_response(
+                message="Profile update failed",
+                errors=serializer.errors
             )
-        return error_response(
-            message="Profile update failed",
-            errors=serializer.errors
-        )
+        except Exception as e:
+            # Handle connection reset and other upload errors
+            error_msg = str(e)
+            if 'Connection reset' in error_msg or 'UnreadablePostError' in error_msg:
+                return error_response(
+                    message="Upload interrupted. Please check your connection and try again.",
+                    errors={"upload": ["Connection was reset during upload"]},
+                    code=400
+                )
+            return error_response(
+                message="An error occurred while updating profile",
+                errors={"detail": [error_msg]},
+                code=500
+            )
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -832,4 +858,148 @@ def get_invoice_detail(request, invoice_id):
         return error_response(
             message="Invoice not found",
             code=404
+        )
+
+
+class GoogleLoginView(APIView):
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        """
+        Handle Google OAuth login/signup
+        Creates new user if doesn't exist, logs in existing user
+        """
+        token = request.data.get("id_token")
+        
+        if not token:
+            return error_response(
+                code=400,
+                message="Google ID token is required",
+                errors={"id_token": ["This field is required"]}
+            )
+        
+        try:
+            # Verify Google token
+            idinfo = id_token.verify_oauth2_token(token, google_requests.Request())
+            
+            # Extract user info from Google
+            email = idinfo.get("email")
+            full_name = idinfo.get("name", "")
+            first_name = idinfo.get("given_name", "")
+            last_name = idinfo.get("family_name", "")
+            
+            if not email:
+                return error_response(
+                    code=400,
+                    message="Email not provided by Google",
+                    errors={"email": ["Email is required from Google account"]}
+                )
+            
+            # Check if user exists
+            user, created = CustomUser.objects.get_or_create(
+                email=email,
+                defaults={
+                    'is_verified': True,  # Google accounts are pre-verified
+                    'role': 'user',  # Default role
+                }
+            )
+            
+            if created:
+                # New user - create profile
+                UserProfile.objects.create(
+                    user=user,
+                    full_name=full_name or f"{first_name} {last_name}".strip() or email.split('@')[0]
+                )
+                message = "Account created and logged in successfully"
+            else:
+                # Existing user
+                message = "Logged in successfully"
+                # Ensure user is verified (in case they registered via email first)
+                if not user.is_verified:
+                    user.is_verified = True
+                    user.save()
+            
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+            
+            # Get user profile
+            try:
+                profile = user.user_profile
+            except UserProfile.DoesNotExist:
+                # Create profile if missing
+                profile = UserProfile.objects.create(
+                    user=user,
+                    full_name=full_name or email.split('@')[0]
+                )
+            
+            profile_serializer = UserProfileSerializer(profile)
+            
+            return Response({
+                "success": True,
+                "message": message,
+                "data": {
+                    "access_token": str(refresh.access_token),
+                    "refresh_token": str(refresh),
+                    "role": user.role,
+                    "is_verified": user.is_verified,
+                    "profile": profile_serializer.data,
+                    "is_new_user": created
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            # Invalid token
+            return error_response(
+                code=400,
+                message="Invalid Google token",
+                errors={"id_token": [str(e)]}
+            )
+        except Exception as e:
+            # Other errors
+            return error_response(
+                code=500,
+                message="Google authentication failed",
+                errors={"error": [str(e)]}
+            )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_own_account(request):
+    """
+    Allow users to delete their own account
+    """
+    try:
+        user = request.user
+        
+        # Delete user profile first (if exists)
+        try:
+            profile = user.user_profile
+            if profile.profile_picture:
+                # Delete profile picture file
+                if os.path.exists(profile.profile_picture.path):
+                    os.remove(profile.profile_picture.path)
+            profile.delete()
+        except UserProfile.DoesNotExist:
+            pass
+        
+        # Delete all user subscriptions
+        UserSubscription.objects.filter(user=user).delete()
+        
+        # Delete all user invoices
+        Invoice.objects.filter(user=user).delete()
+        
+        # Delete the user account
+        email = user.email
+        user.delete()
+        
+        return success_response(
+            message=f"Account {email} has been permanently deleted",
+            code=200
+        )
+    except Exception as e:
+        return error_response(
+            message="Failed to delete account",
+            errors={"error": [str(e)]},
+            code=500
         )

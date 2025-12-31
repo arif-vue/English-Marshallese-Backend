@@ -5,6 +5,7 @@ from .webhooks import stripe_webhook
 urlpatterns = [
     path('register/', views.register_user),
     path('login/', views.login),
+    path('google-login/', views.GoogleLoginView.as_view()),
 
     path('otp/create/', views.create_otp),
     path('otp/verify/', views.verify_otp),
@@ -18,6 +19,7 @@ urlpatterns = [
     
     path('users/', views.list_users),
     path('profile/', views.user_profile),
+    path('delete-account/', views.delete_own_account),
     
     # Subscription endpoints
     path('subscriptions/plans/', views.list_subscription_plans),
