@@ -65,6 +65,7 @@ class UserTranslationHistory(models.Model):
     known_translation = models.TextField(blank=True, null=True)  # AI generated Marshallese
     category = models.ForeignKey('Category', on_delete=models.PROTECT, related_name='ai_feedback')
     notes = models.TextField(blank=True, null=True)  # Context or notes
+    is_favorite = models.BooleanField(default=False)  # User favorite flag
     
     # Status
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')

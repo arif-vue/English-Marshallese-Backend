@@ -109,6 +109,7 @@ class UserTranslationHistorySerializer(serializers.ModelSerializer):
             'status',
             'status_display',
             'admin_notes',
+            'is_favorite',
             'created_date',
             'updated_date'
         ]

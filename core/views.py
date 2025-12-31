@@ -209,7 +209,7 @@ def submit_translation(request):
     if not serializer.is_valid():
         return error_response(
             message="Validation error",
-            details=serializer.errors
+            errors=serializer.errors
         )
     
     # Create submission with current user
@@ -367,9 +367,14 @@ def ai_translate(request):
     )
     history_id = history.id
     
-    # Add history_id to response
+    # Add history_id to response and ensure category is serializable
     response_data = result.copy()
     response_data['history_id'] = history_id
+    # Ensure category is ID not object
+    if 'category' in response_data and not isinstance(response_data['category'], (int, str)):
+        response_data['category'] = category_obj.id
+    elif 'category' not in response_data:
+        response_data['category'] = category_obj.id
     
     return success_response(
         message="Translation completed successfully",
@@ -411,13 +416,13 @@ def get_user_favorites(request):
     
     Returns all translations marked as favorite by user
     """
-    # For now, return translations that are marked as favorite
-    # Note: In future, this could be moved to a UserFavorite junction table
-    favorites = Translation.objects.filter(
+    favorites = UserTranslationHistory.objects.filter(
+        user=request.user,
         is_favorite=True
     ).select_related('category').order_by('-updated_date')
     
-    serializer = TranslationSerializer(favorites, many=True)
+    from .serializers import UserTranslationHistorySerializer
+    serializer = UserTranslationHistorySerializer(favorites, many=True)
     
     return success_response(
         message="Favorite translations retrieved successfully",
@@ -429,35 +434,38 @@ def get_user_favorites(request):
 @permission_classes([IsAuthenticated])
 def toggle_user_favorite(request):
     """
-    Toggle favorite status for a translation
+    Toggle favorite status for user's translation history
     POST /api/core/myfavorites/toggle/
     {
-        "translation_id": 1
+        "history_id": 1
     }
     """
-    translation_id = request.data.get('translation_id')
+    history_id = request.data.get('history_id') or request.data.get('translation_id')
     
-    if not translation_id:
+    if not history_id:
         return error_response(
-            message="translation_id is required",
+            message="history_id is required",
             code=400
         )
     
     try:
-        translation = Translation.objects.get(id=translation_id)
-        translation.is_favorite = not translation.is_favorite
-        translation.save()
+        history = UserTranslationHistory.objects.select_related('category').get(
+            id=history_id,
+            user=request.user
+        )
+        history.is_favorite = not history.is_favorite
+        history.save()
+        
+        from .serializers import UserTranslationHistorySerializer
+        serializer = UserTranslationHistorySerializer(history)
         
         return success_response(
-            message=f"Translation {'added to' if translation.is_favorite else 'removed from'} favorites",
-            data={
-                "translation_id": translation.id,
-                "is_favorite": translation.is_favorite
-            }
+            message=f"Translation {'added to' if history.is_favorite else 'removed from'} favorites",
+            data=serializer.data
         )
-    except Translation.DoesNotExist:
+    except UserTranslationHistory.DoesNotExist:
         return error_response(
-            message="Translation not found",
+            message="Translation history not found",
             code=404
         )
 
@@ -466,22 +474,23 @@ def toggle_user_favorite(request):
 @permission_classes([IsAuthenticated])
 def delete_user_favorite(request, history_id):
     """
-    Remove a translation from favorites (doesn't delete the translation)
-    DELETE /api/core/myfavorites/{translation_id}/
+    Remove a translation from favorites
+    DELETE /api/core/myfavorites/{history_id}/
     """
     try:
-        translation = Translation.objects.get(
+        history = UserTranslationHistory.objects.get(
             id=history_id,
+            user=request.user,
             is_favorite=True
         )
-        translation.is_favorite = False
-        translation.save()
+        history.is_favorite = False
+        history.save()
         
         return success_response(
             message="Removed from favorites successfully",
-            data={"translation_id": history_id}
+            data={"history_id": history_id}
         )
-    except Translation.DoesNotExist:
+    except UserTranslationHistory.DoesNotExist:
         return error_response(
             message="Favorite translation not found",
             code=404
