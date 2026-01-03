@@ -17,9 +17,9 @@ class GoogleLoginSerializer(serializers.Serializer):
             errors['email'] = ['This field is required']
         if not data.get('name'):
             errors['name'] = ['This field is required']
-        if not data.get('id'):
-            errors['id'] = ['This field is required']
-        
+            if not data.get('id'):
+                errors['id'] = ['This field is required']
+            
         if errors:
             raise serializers.ValidationError(errors)
         return data
@@ -110,11 +110,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'profile_picture_url', 
                   'profile_pic_url', 'push_notifications_enabled', 'onesignal_player_id', 'joined_date']
-        read_only_fields = ['id', 'user', 'email', 'profile_picture_url', 'joined_date']
+        # Make profile_pic_url read-only so users can't modify Google photo URL
+        read_only_fields = ['id', 'user', 'email', 'profile_picture_url', 'profile_pic_url', 'joined_date']
     
     def get_profile_picture_url(self, obj):
+        """Return uploaded profile_picture if exists, otherwise return Google photo URL"""
+        # Priority 1: Check for uploaded profile picture (user updated via API)
         if obj.profile_picture:
-            # Check if file actually exists
             try:
                 if obj.profile_picture.storage.exists(obj.profile_picture.name):
                     request = self.context.get('request')
@@ -123,12 +125,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
                     return obj.profile_picture.url
             except:
                 pass
+        
+        # Priority 2: Return Google profile photo URL if available
+        if obj.profile_pic_url:
+            return obj.profile_pic_url
+        
         return None
     
     def to_representation(self, instance):
-        """Override to return profile_picture_url as profile_picture in response"""
+        """Override to return unified profile_picture field with priority logic"""
         representation = super().to_representation(instance)
-        # Replace profile_picture with the full URL
+        # Replace profile_picture with computed URL (uploaded file or Google URL)
         representation['profile_picture'] = representation.pop('profile_picture_url')
         return representation
 
