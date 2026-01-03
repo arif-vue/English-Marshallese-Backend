@@ -152,13 +152,15 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
 
-# Stripe Configuration
-STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
-STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
-STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
+# Apple Sign In Configuration
+APPLE_APP_ID = os.getenv('APPLE_APP_ID', '')  # Your app's bundle ID (e.g., com.yourcompany.app)
 
 # Gemini AI Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+
+# OneSignal Push Notification Configuration
+ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID', '')
+ONESIGNAL_API_KEY = os.getenv('ONESIGNAL_API_KEY', '')
 
 # Test email domains (for development)
 TEST_EMAIL_DOMAINS = ['example.com', 'test.com', 'testing.com']

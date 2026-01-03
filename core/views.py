@@ -547,4 +547,79 @@ def delete_user_ai_feedback(request, history_id):
         )
 
 
+# ==================== PUSH NOTIFICATIONS ====================
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_push_notifications(request):
+    """
+    Toggle push notifications ON/OFF for authenticated user
+    POST /api/core/notifications/toggle/
+    
+    Body:
+    {
+        "enabled": true/false,
+        "onesignal_player_id": "player-id-from-flutter" (optional)
+    }
+    """
+    try:
+        from authentications.models import UserProfile
+        
+        profile = request.user.user_profile
+        enabled = request.data.get('enabled')
+        player_id = request.data.get('onesignal_player_id')
+        
+        if enabled is None:
+            return error_response(
+                message="Validation error",
+                errors={"enabled": ["This field is required"]},
+                code=400
+            )
+        
+        # Update notification preference
+        profile.push_notifications_enabled = enabled
+        
+        # Update OneSignal player ID if provided
+        if player_id:
+            profile.onesignal_player_id = player_id
+        
+        profile.save()
+        
+        return success_response(
+            message=f"Push notifications {'enabled' if enabled else 'disabled'} successfully",
+            data={
+                "push_notifications_enabled": profile.push_notifications_enabled,
+                "onesignal_player_id": profile.onesignal_player_id
+            }
+        )
+    except UserProfile.DoesNotExist:
+        return error_response(
+            message="User profile not found",
+            code=404
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_notification_settings(request):
+    """
+    Get current notification settings for authenticated user
+    GET /api/core/notifications/settings/
+    """
+    try:
+        from authentications.models import UserProfile
+        
+        profile = request.user.user_profile
+        
+        return success_response(
+            message="Notification settings retrieved successfully",
+            data={
+                "push_notifications_enabled": profile.push_notifications_enabled,
+                "onesignal_player_id": profile.onesignal_player_id
+            }
+        )
+    except UserProfile.DoesNotExist:
+        return error_response(
+            message="User profile not found",
+            code=404
+        )

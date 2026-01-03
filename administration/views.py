@@ -515,6 +515,20 @@ def update_ai_feedback(request, history_id):
         
         feedback.save()
         
+        # Send push notification to user when admin updates their feedback
+        if changes_made:
+            from core.notification_service import send_push_notification
+            notification_result = send_push_notification(
+                user=feedback.user,
+                title="Translation Updated",
+                message="Your translation has been updated in AI Translation Feedback.",
+                data={
+                    "type": "ai_feedback_updated",
+                    "history_id": feedback.id,
+                    "source_text": feedback.source_text[:50]
+                }
+            )
+        
         # Create activity log
         RecentActivity.objects.create(
             activity_type='translation_reviewed',
@@ -831,6 +845,20 @@ def update_submission(request, submission_id):
             submission.reviewed_date = timezone.now()
         
         submission.save()
+        
+        # Send push notification to user when admin reviews their submission
+        if changes_made:
+            from core.notification_service import send_push_notification
+            notification_result = send_push_notification(
+                user=submission.user,
+                title="Submission Reviewed",
+                message="Your submission has been reviewed by admin.",
+                data={
+                    "type": "submission_reviewed",
+                    "submission_id": submission.id,
+                    "source_text": submission.source_text[:50]
+                }
+            )
         
         # Create activity log
         RecentActivity.objects.create(

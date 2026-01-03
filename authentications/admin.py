@@ -96,6 +96,6 @@ class UserSubscriptionAdmin(admin.ModelAdmin):
 class InvoiceAdmin(admin.ModelAdmin):
     list_display = ('id', 'invoice_number', 'user', 'amount', 'currency', 'payment_status', 'created_at', 'paid_at')
     list_filter = ('payment_status', 'created_at', 'paid_at')
-    search_fields = ('invoice_number', 'user__email', 'stripe_session_id')
+    search_fields = ('invoice_number', 'user__email')
     readonly_fields = ('invoice_number', 'created_at', 'paid_at')
     ordering = ('-created_at',)

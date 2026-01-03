@@ -19,7 +19,8 @@ from .serializers import (
     SubscriptionPlanSerializer,
     UserSubscriptionSerializer,
     SubscribeSerializer,
-    InvoiceSerializer
+    InvoiceSerializer,
+    GoogleLoginSerializer
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.mail import EmailMultiAlternatives
@@ -28,9 +29,8 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 import os
 import random
-import stripe
-
-stripe.api_key = settings.STRIPE_SECRET_KEY
+import jwt
+import requests as http_requests
 
 def success_response(message, data=None, code=200):
     """Standard success response format"""
@@ -766,67 +766,7 @@ def cancel_subscription(request):
         )
 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def create_checkout_session(request, plan_id):
-    """Create Stripe checkout session for subscription payment"""
-    try:
-        plan = SubscriptionPlan.objects.get(id=plan_id, is_active=True)
-        
-        # Get or create subscription
-        subscription, created = UserSubscription.objects.get_or_create(
-            user=request.user,
-            defaults={'plan': plan, 'status': 'pending'}
-        )
-        
-        if not created:
-            subscription.plan = plan
-            subscription.status = 'pending'
-            subscription.save()
-        
-        # Create Stripe checkout session
-        success_url = request.data.get('success_url', settings.CORS_ALLOWED_ORIGINS[0] if settings.CORS_ALLOWED_ORIGINS else 'http://localhost:3000')
-        cancel_url = request.data.get('cancel_url', settings.CORS_ALLOWED_ORIGINS[0] if settings.CORS_ALLOWED_ORIGINS else 'http://localhost:3000')
-        
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'usd',
-                    'unit_amount': int(plan.price * 100),
-                    'product_data': {
-                        'name': f'{plan.get_plan_type_display()} Plan',
-                        'description': f'{plan.get_billing_cycle_display()} subscription',
-                    },
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f'{success_url}?session_id={{CHECKOUT_SESSION_ID}}',
-            cancel_url=cancel_url,
-            client_reference_id=str(subscription.id),
-            customer_email=request.user.email,
-        )
-        
-        return success_response(
-            message="Checkout session created successfully",
-            data={
-                "checkout_url": checkout_session.url,
-                "session_id": checkout_session.id
-            }
-        )
-        
-    except SubscriptionPlan.DoesNotExist:
-        return error_response(
-            message="Subscription plan not found",
-            code=404
-        )
-    except Exception as e:
-        return error_response(
-            message="Failed to create checkout session",
-            errors={"error": [str(e)]},
-            code=500
-        )
+
 
 
 # ==================== INVOICE MANAGEMENT ====================
@@ -866,35 +806,26 @@ class GoogleLoginView(APIView):
     
     def post(self, request):
         """
-        Handle Google OAuth login/signup
+        Handle Google OAuth login/signup from frontend
+        Frontend sends: name, email, photoUrl, id (Google user ID)
         Creates new user if doesn't exist, logs in existing user
         """
-        token = request.data.get("id_token")
-        
-        if not token:
+        # Validate request data
+        serializer = GoogleLoginSerializer(data=request.data)
+        if not serializer.is_valid():
             return error_response(
                 code=400,
-                message="Google ID token is required",
-                errors={"id_token": ["This field is required"]}
+                message="Invalid request data",
+                errors=serializer.errors
             )
         
+        # Extract validated data
+        email = serializer.validated_data['email']
+        full_name = serializer.validated_data['name']
+        photo_url = serializer.validated_data.get('photoUrl', '')
+        google_id = serializer.validated_data['id']
+        
         try:
-            # Verify Google token
-            idinfo = id_token.verify_oauth2_token(token, google_requests.Request())
-            
-            # Extract user info from Google
-            email = idinfo.get("email")
-            full_name = idinfo.get("name", "")
-            first_name = idinfo.get("given_name", "")
-            last_name = idinfo.get("family_name", "")
-            
-            if not email:
-                return error_response(
-                    code=400,
-                    message="Email not provided by Google",
-                    errors={"email": ["Email is required from Google account"]}
-                )
-            
             # Check if user exists
             user, created = CustomUser.objects.get_or_create(
                 email=email,
@@ -908,13 +839,160 @@ class GoogleLoginView(APIView):
                 # New user - create profile
                 UserProfile.objects.create(
                     user=user,
-                    full_name=full_name or f"{first_name} {last_name}".strip() or email.split('@')[0]
+                    full_name=full_name,
+                    profile_pic_url=photo_url if photo_url else None
                 )
                 message = "Account created and logged in successfully"
             else:
                 # Existing user
                 message = "Logged in successfully"
                 # Ensure user is verified (in case they registered via email first)
+                if not user.is_verified:
+                    user.is_verified = True
+                    user.save()
+                
+                # Update profile picture if provided and user profile exists
+                try:
+                    profile = user.user_profile
+                    if photo_url and not profile.profile_pic_url:
+                        profile.profile_pic_url = photo_url
+                        profile.save()
+                except UserProfile.DoesNotExist:
+                    # Create profile if missing
+                    UserProfile.objects.create(
+                        user=user,
+                        full_name=full_name,
+                        profile_pic_url=photo_url if photo_url else None
+                    )
+            
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+            
+            # Get user profile
+            try:
+                profile = user.user_profile
+            except UserProfile.DoesNotExist:
+                # Create profile if missing (shouldn't happen, but just in case)
+                profile = UserProfile.objects.create(
+                    user=user,
+                    full_name=full_name,
+                    profile_pic_url=photo_url if photo_url else None
+                )
+            
+            profile_serializer = UserProfileSerializer(profile, context={'request': request})
+            
+            return Response({
+                "success": True,
+                "message": message,
+                "data": {
+                    "access_token": str(refresh.access_token),
+                    "refresh_token": str(refresh),
+                    "role": user.role,
+                    "is_verified": user.is_verified,
+                    "profile": profile_serializer.data,
+                    "is_new_user": created
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            # Other errors
+            return error_response(
+                code=500,
+                message="Google authentication failed",
+                errors={"error": [str(e)]}
+            )
+
+
+class AppleLoginView(APIView):
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        """
+        Handle Apple Sign In login/signup
+        Creates new user if doesn't exist, logs in existing user
+        """
+        identity_token = request.data.get("identity_token")
+        
+        if not identity_token:
+            return error_response(
+                code=400,
+                message="Apple identity token is required",
+                errors={"identity_token": ["This field is required"]}
+            )
+        
+        try:
+            # Decode token without verification to get header
+            unverified_header = jwt.get_unverified_header(identity_token)
+            kid = unverified_header.get('kid')
+            alg = unverified_header.get('alg')
+            
+            # Get Apple's public keys
+            apple_keys_url = 'https://appleid.apple.com/auth/keys'
+            response = http_requests.get(apple_keys_url)
+            apple_public_keys = response.json()['keys']
+            
+            # Find the right key
+            public_key = None
+            for key in apple_public_keys:
+                if key['kid'] == kid:
+                    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+                    break
+            
+            if not public_key:
+                return error_response(
+                    code=400,
+                    message="Unable to verify Apple token",
+                    errors={"identity_token": ["Public key not found"]}
+                )
+            
+            # Verify and decode the token
+            decoded_token = jwt.decode(
+                identity_token,
+                public_key,
+                algorithms=[alg],
+                audience=getattr(settings, 'APPLE_APP_ID', ''),  # Your app's bundle ID
+                issuer='https://appleid.apple.com'
+            )
+            
+            # Extract user info from Apple token
+            email = decoded_token.get('email')
+            apple_user_id = decoded_token.get('sub')  # Apple's unique user ID
+            
+            # Get additional user info if provided (only on first sign-in)
+            user_data = request.data.get('user', {})
+            full_name = ''
+            if user_data:
+                first_name = user_data.get('name', {}).get('firstName', '')
+                last_name = user_data.get('name', {}).get('lastName', '')
+                full_name = f"{first_name} {last_name}".strip()
+            
+            if not email:
+                return error_response(
+                    code=400,
+                    message="Email not provided by Apple",
+                    errors={"email": ["Email is required from Apple account"]}
+                )
+            
+            # Check if user exists
+            user, created = CustomUser.objects.get_or_create(
+                email=email,
+                defaults={
+                    'is_verified': True,  # Apple accounts are pre-verified
+                    'role': 'user',  # Default role
+                }
+            )
+            
+            if created:
+                # New user - create profile
+                UserProfile.objects.create(
+                    user=user,
+                    full_name=full_name or email.split('@')[0]
+                )
+                message = "Account created and logged in successfully"
+            else:
+                # Existing user
+                message = "Logged in successfully"
+                # Ensure user is verified
                 if not user.is_verified:
                     user.is_verified = True
                     user.save()
@@ -947,18 +1025,22 @@ class GoogleLoginView(APIView):
                 }
             }, status=status.HTTP_200_OK)
             
-        except ValueError as e:
-            # Invalid token
+        except jwt.ExpiredSignatureError:
             return error_response(
                 code=400,
-                message="Invalid Google token",
-                errors={"id_token": [str(e)]}
+                message="Apple token has expired",
+                errors={"identity_token": ["Token expired"]}
+            )
+        except jwt.InvalidTokenError as e:
+            return error_response(
+                code=400,
+                message="Invalid Apple token",
+                errors={"identity_token": [str(e)]}
             )
         except Exception as e:
-            # Other errors
             return error_response(
                 code=500,
-                message="Google authentication failed",
+                message="Apple authentication failed",
                 errors={"error": [str(e)]}
             )
 

@@ -35,6 +35,10 @@ urlpatterns = [
     path('my-ai-feedback/', views.get_user_ai_feedback, name='user_ai_feedback'),
     path('my-ai-feedback/<int:history_id>/', views.delete_user_ai_feedback, name='delete_user_ai_feedback'),
     
+    # Push Notifications - Requires Auth
+    path('notifications/toggle/', views.toggle_push_notifications, name='toggle_notifications'),
+    path('notifications/settings/', views.get_notification_settings, name='notification_settings'),
+    
     # List all (with pagination)
     path('page/<int:page>/', views.list_all_translations, name='list_translations'),
 ]

@@ -4,6 +4,26 @@ from django.contrib.auth import get_user_model, authenticate
 
 User = get_user_model()
 
+class GoogleLoginSerializer(serializers.Serializer):
+    """Serializer for Google login from frontend"""
+    name = serializers.CharField(required=True)
+    email = serializers.EmailField(required=True)
+    photoUrl = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    id = serializers.CharField(required=True)  # Google user ID
+    
+    def validate(self, data):
+        errors = {}
+        if not data.get('email'):
+            errors['email'] = ['This field is required']
+        if not data.get('name'):
+            errors['name'] = ['This field is required']
+        if not data.get('id'):
+            errors['id'] = ['This field is required']
+        
+        if errors:
+            raise serializers.ValidationError(errors)
+        return data
+
 class CustomUserSerializer(serializers.ModelSerializer):
     user_profile = serializers.SerializerMethodField()
 
@@ -88,9 +108,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = UserProfile
-        fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'profile_picture_url', 'joined_date']
+        fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'profile_picture_url', 
+                  'profile_pic_url', 'push_notifications_enabled', 'onesignal_player_id', 'joined_date']
         read_only_fields = ['id', 'user', 'email', 'profile_picture_url', 'joined_date']
-
+    
     def get_profile_picture_url(self, obj):
         if obj.profile_picture:
             # Check if file actually exists
@@ -186,7 +207,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = ['id', 'invoice_number', 'user', 'user_email', 'subscription', 
                   'subscription_plan', 'amount', 'currency', 'payment_status', 
-                  'stripe_payment_intent', 'stripe_session_id', 'created_at', 'paid_at']
+                  'created_at', 'paid_at']
         read_only_fields = ['id', 'invoice_number', 'created_at', 'paid_at']
     
     def get_subscription_plan(self, obj):
