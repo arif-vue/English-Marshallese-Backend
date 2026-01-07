@@ -1,7 +1,7 @@
 import csv
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
-from core.models import Translation
+from core.models import Translation, Category
 from datetime import datetime
 
 User = get_user_model()
@@ -31,6 +31,28 @@ class Command(BaseCommand):
                         except User.DoesNotExist:
                             pass
                     
+                    # Map category string to Category instance
+                    category_name_mapping = {
+                        'common_phrases': 'Common Phrases',
+                        'questions': 'Questions',
+                        'general': 'General',
+                        'symptoms': 'Symptoms',
+                        'body_parts': 'Body Parts',
+                        'medication': 'Medication',
+                        'procedures': 'General',  # Map to General if not exists
+                        'medical_staff': 'General',  # Map to General if not exists
+                        'medical_equipment': 'General',  # Map to General if not exists
+                    }
+                    
+                    category_str = row.get('category', 'general').strip("'\"")
+                    category_name = category_name_mapping.get(category_str, 'General')
+                    
+                    try:
+                        category = Category.objects.get(name=category_name)
+                    except Category.DoesNotExist:
+                        # Default to General if category not found
+                        category = Category.objects.get(name='General')
+                    
                     # Check if translation already exists
                     exists = Translation.objects.filter(
                         english_text=row['english_text'],
@@ -45,11 +67,10 @@ class Command(BaseCommand):
                     Translation.objects.create(
                         english_text=row['english_text'],
                         marshallese_text=row['marshallese_text'],
-                        category=row.get('category', 'general'),
-                        description=row.get('description', ''),
+                        category=category,
+                        context=row.get('description', ''),
                         is_favorite=row.get('is_favorite', 'false').lower() == 'true',
                         usage_count=int(row.get('usage_count', 0)),
-                        is_sample=row.get('is_sample', 'false').lower() == 'true',
                         created_by=created_by,
                     )
                     

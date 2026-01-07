@@ -86,14 +86,14 @@ def send_otp_email(email, otp):
         msg = EmailMultiAlternatives(
             subject='Your OTP Code',
             body=f'Your OTP is {otp}',
-            from_email='arif.elixir@gmail.com',
+            from_email=settings.DEFAULT_FROM_EMAIL,
             to=[email]
         )
         msg.attach_alternative(html_content, "text/html")
         msg.send(fail_silently=False)
-        print(f"REAL EMAIL SENT to: {email}")
+        print(f"✅ REAL EMAIL SENT to: {email}")
     except Exception as e:
-        print(f"EMAIL FAILED for {email}: {e}")
+        print(f"❌ EMAIL FAILED for {email}: {e}")
         # Fallback: print to console if email fails
         print("\n" + "="*60)
         print("EMAIL FALLBACK (Console Output)")

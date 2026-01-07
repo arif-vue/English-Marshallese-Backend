@@ -12,19 +12,19 @@ class Command(BaseCommand):
 
         # Create categories matching CATEGORY_CHOICES
         categories_data = [
-            {'name': 'Common Phrases', 'description': 'Everyday phrases used in daily conversation'},
-            {'name': 'Questions', 'description': 'Question formats and interrogative phrases'},
-            {'name': 'General', 'description': 'General vocabulary and common terms'},
-            {'name': 'Symptoms', 'description': 'Medical symptoms and health conditions'},
-            {'name': 'Body Parts', 'description': 'Anatomical terms and body part names'},
-            {'name': 'Medication', 'description': 'Pharmaceutical and medication terminology'},
+            {'name': 'Common Phrases', 'context': 'Everyday phrases used in daily conversation'},
+            {'name': 'Questions', 'context': 'Question formats and interrogative phrases'},
+            {'name': 'General', 'context': 'General vocabulary and common terms'},
+            {'name': 'Symptoms', 'context': 'Medical symptoms and health conditions'},
+            {'name': 'Body Parts', 'context': 'Anatomical terms and body part names'},
+            {'name': 'Medication', 'context': 'Pharmaceutical and medication terminology'},
         ]
 
         created_count = 0
         for cat_data in categories_data:
             category = Category.objects.create(**cat_data)
             created_count += 1
-            self.stdout.write(f'Created: {category.name} (slug: {category.slug})')
+            self.stdout.write(f'Created: {category.name}')
 
         self.stdout.write(
             self.style.SUCCESS(f'Successfully created {created_count} categories')
