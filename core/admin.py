@@ -42,7 +42,7 @@ class UserTranslationHistoryAdmin(admin.ModelAdmin):
     list_display = ('id', 'user_email', 'source_short', 'translation_short', 'category_name', 'status', 'created_date')
     list_filter = ('status', 'category', 'created_date', 'user')
     search_fields = ('source_text', 'known_translation', 'user__email')
-    readonly_fields = ('created_date', 'updated_date')
+    readonly_fields = ('created_date', 'updated_date', 'user')
     ordering = ('-created_date',)
     
     fieldsets = (
@@ -60,6 +60,47 @@ class UserTranslationHistoryAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+    
+    def save_model(self, request, obj, form, change):
+        """Override save to handle admin updates"""
+        from django.utils import timezone
+        from .notification_service import notify_user
+        
+        # Check if status is being changed to 'updated'
+        if change and obj.status == 'updated':
+            # Set reviewed metadata
+            obj.reviewed_by = request.user
+            obj.reviewed_date = timezone.now()
+            
+            # Save the UserTranslationHistory first
+            super().save_model(request, obj, form, change)
+            
+            # Create or update Translation in main database
+            if obj.known_translation:
+                Translation.objects.update_or_create(
+                    english_text=obj.source_text,
+                    defaults={
+                        'marshallese_text': obj.known_translation,
+                        'category': obj.category,
+                        'context': obj.notes or '',
+                        'created_by': request.user,
+                    }
+                )
+            
+            # Notify user about the update
+            notify_user(
+                user=obj.user,
+                title="Translation Updated",
+                message=f"Your translation '{obj.source_text[:50]}...' has been reviewed and updated by admin.",
+                data={
+                    "type": "translation_updated",
+                    "history_id": obj.id,
+                    "source_text": obj.source_text,
+                    "translation": obj.known_translation
+                }
+            )
+        else:
+            super().save_model(request, obj, form, change)
     
     def user_email(self, obj):
         return obj.user.email

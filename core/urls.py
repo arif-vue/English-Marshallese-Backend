@@ -26,11 +26,6 @@ urlpatterns = [
     # Search Suggestions
     path('suggestions/', views.get_search_suggestions, name='search_suggestions'),
     
-    # User Submissions - Requires Auth
-    path('submit/', views.submit_translation, name='submit_translation'),
-    path('submissions/', views.get_user_submissions, name='user_submissions'),
-    path('submissions/<int:submission_id>/', views.delete_user_submission, name='delete_user_submission'),
-    
     # User AI Translation Feedback - Requires Auth
     path('my-ai-feedback/', views.get_user_ai_feedback, name='user_ai_feedback'),
     path('my-ai-feedback/<int:history_id>/', views.delete_user_ai_feedback, name='delete_user_ai_feedback'),

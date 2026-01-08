@@ -188,3 +188,19 @@ def notify_admins(title, message, data=None):
             
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def notify_user(user, title, message, data=None):
+    """
+    Send push notification to a specific user (alias for send_push_notification)
+    
+    Args:
+        user: User object
+        title: Notification title
+        message: Notification message
+        data: Optional dict of additional data
+    
+    Returns:
+        dict: Response from OneSignal API or error dict
+    """
+    return send_push_notification(user, title, message, data)

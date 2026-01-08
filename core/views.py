@@ -42,7 +42,7 @@ def get_translation_detail(request, translation_id):
     Requires authentication
     """
     try:
-        translation = Translation.objects.get(id=translation_id)
+        translation = Translation.objects.select_related('category').get(id=translation_id)
         
         # Increment usage count
         translation.increment_usage()
@@ -71,7 +71,7 @@ def get_recent_translations(request):
     """
     recent = Translation.objects.filter(
         usage_count__gt=0
-    ).order_by('-updated_date')[:10]
+    ).select_related('category').order_by('-updated_date')[:10]
     
     serializer = RecentTranslationSerializer(recent, many=True)
     
@@ -119,21 +119,40 @@ def get_translations_by_category(request, category):
     """
     Get all translations for a specific category
     GET /api/translations/category/{category}/
+    category can be either category ID or category name
     """
+    from .models import Category
+    
+    # Try to get category by ID first, then by name
+    category_obj = None
+    try:
+        # Check if category is a number (ID)
+        category_id = int(category)
+        category_obj = Category.objects.filter(id=category_id).first()
+    except (ValueError, TypeError):
+        # Not a number, search by name
+        category_obj = Category.objects.filter(name__iexact=category).first()
+    
+    if not category_obj:
+        return error_response(
+            message=f"Category not found: {category}",
+            code=404
+        )
+    
     translations = Translation.objects.filter(
-        category=category
-    ).order_by('english_text')
+        category=category_obj
+    ).select_related('category').order_by('english_text')
     
     if not translations.exists():
         return error_response(
-            message=f"No translations found for category: {category}",
+            message=f"No translations found for category: {category_obj.name}",
             code=404
         )
     
     serializer = TranslationSerializer(translations, many=True)
     
     return success_response(
-        message=f"Found {translations.count()} translations in category: {category}",
+        message=f"Found {translations.count()} translations in category: {category_obj.name}",
         data=serializer.data
     )
 
@@ -187,95 +206,6 @@ def get_search_suggestions(request):
     )
 
 
-# ==================== SUBMISSION (User Contributions) ====================
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def submit_translation(request):
-    """
-    Submit a new translation for admin review
-    POST /api/core/submit/
-    {
-        "source_text": "Hello",
-        "known_translation": "Iakwe",
-        "category": "common_phrases",
-        "notes": "Common greeting"
-    }
-    """
-    from .models import UserSubmission
-    from .serializers import UserSubmissionSerializer
-    
-    serializer = UserSubmissionSerializer(data=request.data)
-    if not serializer.is_valid():
-        return error_response(
-            message="Validation error",
-            errors=serializer.errors
-        )
-    
-    # Create submission with current user
-    submission = serializer.save(
-        user=request.user,
-        status='pending'
-    )
-    
-    return success_response(
-        message="Translation submitted successfully. Pending admin review.",
-        data=UserSubmissionSerializer(submission).data,
-        code=201
-    )
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_user_submissions(request):
-    """
-    Get user's submission list
-    GET /api/core/submissions/
-    
-    Returns all user submissions
-    """
-    from .models import UserSubmission
-    from .serializers import UserSubmissionSerializer
-    
-    submissions = UserSubmission.objects.filter(
-        user=request.user
-    ).order_by('-created_date')
-    
-    serializer = UserSubmissionSerializer(submissions, many=True)
-    
-    return success_response(
-        message="Submissions retrieved successfully",
-        data=serializer.data
-    )
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def delete_user_submission(request, submission_id):
-    """
-    Delete a user's submission
-    DELETE /api/core/submissions/{submission_id}/
-    """
-    from .models import UserSubmission
-    
-    try:
-        submission = UserSubmission.objects.get(
-            id=submission_id,
-            user=request.user
-        )
-        submission.delete()
-        
-        return success_response(
-            message="Submission deleted successfully",
-            data={"submission_id": submission_id}
-        )
-    except UserSubmission.DoesNotExist:
-        return error_response(
-            message="Submission not found",
-            code=404
-        )
-
-
 # ==================== ALL TRANSLATIONS (Paginated) ====================
 
 @api_view(['GET'])
@@ -291,7 +221,7 @@ def list_all_translations(request, page=1):
     
     offset = (page - 1) * limit
     
-    translations = Translation.objects.all().order_by('english_text')[offset:offset+limit]
+    translations = Translation.objects.select_related('category').all().order_by('english_text')[offset:offset+limit]
     total_count = Translation.objects.count()
     
     serializer = TranslationSerializer(translations, many=True)
@@ -318,28 +248,20 @@ def ai_translate(request):
     POST /api/core/translation/
     {
         "text": "I have a headache",
-        "category": "symptoms"  // optional: common_phrases, questions, general, symptoms, body_parts, medication
+        "category": "symptoms"  // optional: category ID or category name (case-insensitive)
+                                 // Use GET /api/core/categories/ to see all available categories
     }
     
     Requires authentication
     Returns translation with quality indicators and admin review flag
     """
     text = request.data.get('text', '').strip()
-    category = request.data.get('category', '').strip().lower()
+    category = request.data.get('category', '').strip()  # Can be ID or name
     
     if not text:
         return error_response(
             message="Text is required",
             errors={"text": ["This field is required"]},
-            code=400
-        )
-    
-    # Validate category if provided
-    valid_categories = ['common_phrases', 'questions', 'general', 'symptoms', 'body_parts', 'medication']
-    if category and category not in valid_categories:
-        return error_response(
-            message="Invalid category",
-            errors={"category": [f"Category must be one of: {', '.join(valid_categories)}"]},
             code=400
         )
     
@@ -349,16 +271,6 @@ def ai_translate(request):
     # Get category - prefer AI detected category, then user-provided, then General
     from .models import Category
     category_obj = None
-    
-    # Category mapping for user input (snake_case to Title Case)
-    category_map = {
-        'common_phrases': 'Common Phrases',
-        'questions': 'Questions',
-        'general': 'General',
-        'symptoms': 'Symptoms',
-        'body_parts': 'Body Parts',
-        'medication': 'Medication'
-    }
     
     # Try to get category from AI result first
     ai_category_id = result.get('category')
@@ -370,11 +282,21 @@ def ai_translate(request):
     
     # If user provided category and AI didn't find one, use user's
     if not category_obj and category:
-        category_name = category_map.get(category, 'General')
+        # Try as ID first, then as name (case-insensitive)
         try:
-            category_obj = Category.objects.get(name=category_name)
-        except Category.DoesNotExist:
-            pass
+            category_id = int(category)
+            category_obj = Category.objects.filter(id=category_id).first()
+        except (ValueError, TypeError):
+            # Not an ID, search by name (case-insensitive)
+            category_obj = Category.objects.filter(name__iexact=category).first()
+        
+        # If still not found, return error for invalid category
+        if not category_obj:
+            return error_response(
+                message="Invalid category",
+                errors={"category": [f"Category '{category}' not found. Use GET /api/core/categories/ to see available categories."]},
+                code=400
+            )
     
     # Fallback to General
     if not category_obj:
@@ -382,21 +304,22 @@ def ai_translate(request):
     
     # Determine status based on admin_review_needed
     admin_review_needed = result.get('admin_review_needed', True)
-    status = 'pending' if admin_review_needed else 'updated'
+    history_id = None
     
-    # Save to user's history (user is always authenticated)
-    history = UserTranslationHistory.objects.create(
-        user=request.user,
-        source_text=text,
-        known_translation=result.get('translation', ''),
-        category=category_obj,
-        notes=result.get('notes', ''),
-        status=status
-    )
-    history_id = history.id
-    
-    # Notify admins if translation requires review
+    # Only save to UserTranslationHistory if admin review is needed (not exact match)
     if admin_review_needed:
+        pending_status = 'pending'
+        history = UserTranslationHistory.objects.create(
+            user=request.user,
+            source_text=text,
+            known_translation=result.get('translation', ''),
+            category=category_obj,
+            notes=result.get('notes', ''),
+            status=pending_status
+        )
+        history_id = history.id
+        
+        # Notify admins for review
         from .notification_service import notify_admins
         notify_admins(
             title="New Translation Needs Review",
@@ -445,7 +368,7 @@ def get_user_recent_translations(request):
     """
     recent_translations = UserTranslationHistory.objects.filter(
         user=request.user
-    ).order_by('-created_date')
+    ).select_related('category').order_by('-created_date')
     
     from .serializers import UserTranslationHistorySerializer
     serializer = UserTranslationHistorySerializer(recent_translations, many=True)

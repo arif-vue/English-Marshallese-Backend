@@ -13,7 +13,7 @@ class CategoryNestedSerializer(serializers.ModelSerializer):
 
 class TranslationSerializer(serializers.ModelSerializer):
     """Serializer for Translation model"""
-    created_by_email = serializers.EmailField(source='created_by.email', read_only=True)
+    created_by_email = serializers.SerializerMethodField()
     category_details = CategoryNestedSerializer(source='category', read_only=True)
     
     class Meta:
@@ -33,11 +33,15 @@ class TranslationSerializer(serializers.ModelSerializer):
             'updated_date'
         ]
         read_only_fields = ['id', 'created_date', 'updated_date', 'usage_count', 'created_by_email', 'category_details']
+    
+    def get_created_by_email(self, obj):
+        """Safely get created_by email, return None if not available"""
+        return obj.created_by.email if obj.created_by else None
 
 
 class TranslationDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer with AI context information"""
-    created_by_email = serializers.EmailField(source='created_by.email', read_only=True)
+    created_by_email = serializers.SerializerMethodField()
     ai_context = serializers.SerializerMethodField()
     category_details = CategoryNestedSerializer(source='category', read_only=True)
     
@@ -59,6 +63,10 @@ class TranslationDetailSerializer(serializers.ModelSerializer):
             'updated_date'
         ]
         read_only_fields = ['id', 'created_date', 'updated_date', 'usage_count', 'created_by_email', 'category_details']
+    
+    def get_created_by_email(self, obj):
+        """Safely get created_by email, return None if not available"""
+        return obj.created_by.email if obj.created_by else None
     
     def get_ai_context(self, obj):
         """Generate AI context based on category and context"""
