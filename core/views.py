@@ -63,17 +63,21 @@ def get_translation_detail(request, translation_id):
 # ==================== RECENT TRANSLATIONS ====================
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def get_recent_translations(request):
     """
-    Get most recently used translations
-    GET /api/translations/recent/
-    """
-    recent = Translation.objects.filter(
-        usage_count__gt=0
-    ).select_related('category').order_by('-updated_date')[:10]
+    Get user's all recent translations (both admin_review true and false)
+    GET /api/core/recent/
     
-    serializer = RecentTranslationSerializer(recent, many=True)
+    Returns all user's translation history ordered by most recent
+    """
+    from .serializers import UserTranslationHistorySerializer
+    
+    recent = UserTranslationHistory.objects.filter(
+        user=request.user
+    ).select_related('category').order_by('-created_date')[:20]
+    
+    serializer = UserTranslationHistorySerializer(recent, many=True)
     
     return success_response(
         message="Recent translations retrieved successfully",
@@ -304,22 +308,22 @@ def ai_translate(request):
     
     # Determine status based on admin_review_needed
     admin_review_needed = result.get('admin_review_needed', True)
-    history_id = None
     
-    # Only save to UserTranslationHistory if admin review is needed (not exact match)
+    # Save ALL translations to UserTranslationHistory (for recent translations)
+    # Status: 'pending' if needs admin review, 'updated' if exact match (no review needed)
+    translation_status = 'pending' if admin_review_needed else 'updated'
+    history = UserTranslationHistory.objects.create(
+        user=request.user,
+        source_text=text,
+        known_translation=result.get('translation', ''),
+        category=category_obj,
+        notes=result.get('notes', ''),
+        status=translation_status
+    )
+    history_id = history.id
+    
+    # Only notify admins if translation requires review (admin_review=true)
     if admin_review_needed:
-        pending_status = 'pending'
-        history = UserTranslationHistory.objects.create(
-            user=request.user,
-            source_text=text,
-            known_translation=result.get('translation', ''),
-            category=category_obj,
-            notes=result.get('notes', ''),
-            status=pending_status
-        )
-        history_id = history.id
-        
-        # Notify admins for review
         from .notification_service import notify_admins
         notify_admins(
             title="New Translation Needs Review",
@@ -475,14 +479,15 @@ def delete_user_favorite(request, history_id):
 @permission_classes([IsAuthenticated])
 def get_user_ai_feedback(request):
     """
-    Get user's AI translation feedback list
+    Get user's AI translation feedback list (only pending translations requiring admin review)
     GET /api/core/my-ai-feedback/
     
-    Shows user their own AI translation history
+    Shows only translations with status='pending' (admin_review=true)
     """
-    # Get user's translations
+    # Get only pending translations (admin_review=true)
     feedback_items = UserTranslationHistory.objects.filter(
-        user=request.user
+        user=request.user,
+        status='pending'
     ).select_related('category').order_by('-created_date')
     
     from .serializers import UserTranslationHistorySerializer

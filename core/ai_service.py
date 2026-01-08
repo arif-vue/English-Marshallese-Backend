@@ -443,18 +443,22 @@ Return in this EXACT JSON format:
     
     # Step 6: Determine source, confidence, and admin flag
     if len(exact_matches) == len(keywords):
+        # All keywords found with exact match - no admin review needed
         source = "exact_match"
         confidence = "high"
         admin_review = False
     elif len(fuzzy_matches) > 0 and not_found_count == 0:
+        # Only fuzzy matches (no exact, no missing) - NEEDS admin review
         source = "fuzzy_match"
         confidence = "medium"
-        admin_review = False
+        admin_review = True
     elif len(exact_matches) > 0 or len(fuzzy_matches) > 0:
+        # Mix of matches - needs review if any words not found
         source = "combined"
         confidence = "medium"
         admin_review = True if not_found_count > 0 else False
     else:
+        # No matches at all - AI generated, needs review
         source = "llm_generated"
         confidence = "medium"
         admin_review = True

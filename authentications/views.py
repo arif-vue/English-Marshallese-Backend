@@ -159,7 +159,7 @@ def login(request):
                 user=user, 
                 full_name=user.email.split('@')[0]
             )
-        profile_serializer = UserProfileSerializer(profile)
+        profile_serializer = UserProfileSerializer(profile, context={'request': request})
         return success_response(
             message="Login successful",
             data={
@@ -219,7 +219,7 @@ def user_profile(request):
     if request.method in ['PUT', 'PATCH']:
         try:
             # Handle file upload with request.FILES
-            serializer = UserProfileSerializer(profile, data=request.data, partial=True)
+            serializer = UserProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
             if serializer.is_valid():
                 # Delete old profile picture if a new one is uploaded
                 if 'profile_picture' in request.FILES and profile.profile_picture:
@@ -1010,7 +1010,7 @@ class AppleLoginView(APIView):
                     full_name=full_name or email.split('@')[0]
                 )
             
-            profile_serializer = UserProfileSerializer(profile)
+            profile_serializer = UserProfileSerializer(profile, context={'request': request})
             
             return Response({
                 "success": True,

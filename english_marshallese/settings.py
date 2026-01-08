@@ -11,8 +11,13 @@ SECRET_KEY = 'django-insecure-1&10@%9^8vyn+#ds4m+l51^(9f!)g@j7a&nu7c$jpwdtj!(h+5
 
 DEBUG = True
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
+# Allow localhost, dev tunnel, and any hosts from .env
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', 'db926d6p-8000.asse.devtunnels.ms', '*.devtunnels.ms']
+if os.getenv('ALLOWED_HOSTS'):
+    ALLOWED_HOSTS.extend(os.getenv('ALLOWED_HOSTS', '').split(','))
 
+# Base URL for media files (used in APIs)
+BASE_URL = os.getenv('BASE_URL', 'https://db926d6p-8000.asse.devtunnels.ms')
 
 # Application definition
 
@@ -110,6 +115,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

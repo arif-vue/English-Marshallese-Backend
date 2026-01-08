@@ -111,18 +111,19 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'full_name', 'email', 'profile_picture', 'profile_picture_url', 
                   'profile_pic_url', 'push_notifications_enabled', 'onesignal_player_id', 'joined_date']
         # Make profile_pic_url read-only so users can't modify Google photo URL
+        # profile_picture is for uploading, profile_picture_url is for displaying
         read_only_fields = ['id', 'user', 'email', 'profile_picture_url', 'profile_pic_url', 'joined_date']
     
     def get_profile_picture_url(self, obj):
         """Return uploaded profile_picture if exists, otherwise return Google photo URL"""
+        from django.conf import settings
+        
         # Priority 1: Check for uploaded profile picture (user updated via API)
         if obj.profile_picture:
             try:
                 if obj.profile_picture.storage.exists(obj.profile_picture.name):
-                    request = self.context.get('request')
-                    if request:
-                        return request.build_absolute_uri(obj.profile_picture.url)
-                    return obj.profile_picture.url
+                    # Use BASE_URL from settings instead of request.build_absolute_uri
+                    return f"{settings.BASE_URL}{obj.profile_picture.url}"
             except:
                 pass
         
@@ -133,10 +134,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return None
     
     def to_representation(self, instance):
-        """Override to return unified profile_picture field with priority logic"""
+        """Override to clean up the response"""
         representation = super().to_representation(instance)
-        # Replace profile_picture with computed URL (uploaded file or Google URL)
-        representation['profile_picture'] = representation.pop('profile_picture_url')
+        # Remove the profile_picture file path field (we only want the URL)
+        representation.pop('profile_picture', None)
         return representation
 
     def validate(self, data):
