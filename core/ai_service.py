@@ -25,6 +25,56 @@ def get_gemini_model():
 model = get_gemini_model()
 
 
+def detect_language(text: str) -> str:
+    """Detect if input text is English or Marshallese.
+    
+    Args:
+        text: Input text to detect language
+        
+    Returns:
+        'english' or 'marshallese'
+    """
+    # Marshallese-specific characters:
+    # - Macron vowels: ā, ō, ū
+    # - Dotted consonants: ṃ, ṇ, ḷ, ņ, ļ
+    # - Dot below vowels: ọ, ạ, ẹ, ị, ụ (alternative orthography)
+    marshallese_chars = set('ṃṇḷōāūņļọạẹịụ')
+    
+    text_lower = text.lower()
+    
+    # Check for Marshallese-specific characters
+    if any(char in text_lower for char in marshallese_chars):
+        return 'marshallese'
+    
+    # Common Marshallese words (various spellings)
+    marshallese_words = {
+        'iakwe', 'yokwe', 'iọkwe', 'iokkwe',  # Hello/Love
+        'kommol', 'kommōl', 'kom̧m̧ōl',  # Thank you
+        'jinoin', 'jinoin',  # Wait
+        'emoj', 'emōj',  # Done/Finished
+        'ejja', 'ejjab', 'ejjelok',  # Not/None
+        'ewor', 'ewōr',  # There is
+        'eok', 'ij', 'kwe', 'kwoj', 'kwōj',  # Pronouns/Particles
+        'rainin', 'ilju', 'inne',  # Time words (today, tomorrow, yesterday)
+        'bōk', 'bok', 'mōṇā', 'mona',  # Common nouns
+        'kajjitōk', 'bar', 'wōt', 'ak',  # Common words
+        'ri-',  # Prefix for people
+    }
+    words = set(text_lower.split())
+    
+    if words & marshallese_words:
+        return 'marshallese'
+    
+    # Check for partial matches of Marshallese patterns
+    for word in words:
+        # Words starting with common Marshallese prefixes
+        if word.startswith(('ri-', 'ij', 'kwō', 'em')):
+            return 'marshallese'
+    
+    # Default to English
+    return 'english'
+
+
 def extract_keywords(text: str) -> List[str]:
     """Extract meaningful keywords from text, removing common words.
     Supports both English and Marshallese.
@@ -218,10 +268,11 @@ def translate_with_ai(user_text: str) -> Dict:
     Translate text using AI with database lookup.
     
     Workflow:
-    1. Extract keywords
-    2. Search database (exact + fuzzy)
-    3. Send findings to Gemini LLM
-    4. Parse and return translation with metadata
+    1. Auto-detect input language (English or Marshallese)
+    2. Extract keywords
+    3. Search database (exact + fuzzy)
+    4. Send findings to Gemini LLM
+    5. Parse and return translation with metadata
     
     Args:
         user_text: Text to translate
@@ -229,12 +280,19 @@ def translate_with_ai(user_text: str) -> Dict:
     Returns:
         Dictionary with translation, context, source, confidence, details, admin_review_needed, notes
     """
+    # Step 0: Auto-detect language
+    detected_lang = detect_language(user_text)
+    target_lang = 'marshallese' if detected_lang == 'english' else 'english'
+    print(f"[DEBUG] Detected language: {detected_lang} -> Target: {target_lang}")
+    
     if not model:
         return {
             "translation": user_text,
             "context": "Error",
             "source": "error",
             "confidence": "low",
+            "detected_language": detected_lang,
+            "target_language": target_lang,
             "details": {},
             "admin_review_needed": True,
             "notes": "Gemini API key not configured"
@@ -254,6 +312,8 @@ def translate_with_ai(user_text: str) -> Dict:
             "context": "Error",
             "source": "error",
             "confidence": "low",
+            "detected_language": detected_lang,
+            "target_language": target_lang,
             "details": {},
             "admin_review_needed": True,
             "notes": f"Database error: {search_results['error']}"
@@ -265,7 +325,11 @@ def translate_with_ai(user_text: str) -> Dict:
     not_found_count = search_results.get("not_found_count", 0)
     
     # Build context for LLM
-    context = f"""Input: "{user_text}"
+    context = f"""LANGUAGE DETECTION:
+- Input Language: {detected_lang.upper()}
+- Target Language: {target_lang.upper()}
+
+Input Text: "{user_text}"
 Keywords extracted: {keywords}
 
 DATABASE SEARCH RESULTS:
@@ -283,34 +347,63 @@ EXACT MATCHES ({len(exact_matches)}):
     if not_found_count > 0:
         context += f"\nKEYWORDS NOT FOUND: {not_found_count} (generate these using your knowledge)\n"
     
-    context += """
+    context += f"""
 INSTRUCTIONS:
-1. Auto-detect input language (English or Marshallese)
+1. Input is in {detected_lang.upper()}, translate to {target_lang.upper()}
 2. Use exact matches as-is (highest priority)
 3. Use fuzzy matches for typos (medium priority) 
 4. Generate missing translations (lowest priority)
-5. Combine all into one natural sentence in target language
+5. Combine all into one natural sentence in {target_lang.upper()}
 
 Return in this EXACT JSON format:
-{
-  "translation": "the final clean translation",
+{{
+  "translation": "the final clean translation in {target_lang}",
   "context": "brief description of what this translation is about (topic/category)",
-  "word_breakdown": {
-    "word1": {"translation": "...", "source": "exact|fuzzy|generated", "confidence": "high|medium|low"},
-    "word2": {"translation": "...", "source": "exact|fuzzy|generated", "confidence": "high|medium|low"}
-  }
-}"""
+  "word_breakdown": {{
+    "word1": {{"translation": "...", "source": "exact|fuzzy|generated", "confidence": "high|medium|low"}},
+    "word2": {{"translation": "...", "source": "exact|fuzzy|generated", "confidence": "high|medium|low"}}
+  }}
+}}"""
 
     # Step 4: Send to LLM
     try:
         response = model.generate_content(context)
         llm_text = response.text if response.text else "{}"
     except Exception as e:
+        # Even on error, detect category from database matches
+        from .models import Category
+        detected_category_id = None
+        detected_category_name = 'General'
+        
+        all_matches = exact_matches + fuzzy_matches
+        if all_matches:
+            first_category = all_matches[0].get('category')
+            if first_category:
+                try:
+                    if hasattr(first_category, 'id'):
+                        detected_category_id = first_category.id
+                        detected_category_name = first_category.name
+                    else:
+                        cat_obj = Category.objects.get(id=first_category)
+                        detected_category_id = cat_obj.id
+                        detected_category_name = cat_obj.name
+                except:
+                    pass
+        
+        if not detected_category_id:
+            general_cat = Category.objects.filter(name='General').first()
+            if general_cat:
+                detected_category_id = general_cat.id
+        
         return {
             "translation": user_text,
             "context": "Error",
             "source": "error",
             "confidence": "low",
+            "detected_language": detected_lang,
+            "target_language": target_lang,
+            "category": detected_category_id,
+            "category_name": detected_category_name,
             "details": {},
             "admin_review_needed": True,
             "notes": f"Gemini API error: {str(e)}"
@@ -367,14 +460,34 @@ Return in this EXACT JSON format:
         admin_review = True
     
     # Step 7: Auto-detect category from matches
-    detected_category = 'general'
+    from .models import Category
+    detected_category_id = None
+    detected_category_name = 'General'
+    
     all_matches = exact_matches + fuzzy_matches
     if all_matches:
-        # Get the most common category from matches
-        categories = [m.get('category', 'general') for m in all_matches]
-        if categories:
-            # Use the first match's category as the detected category
-            detected_category = categories[0] if categories[0] else 'general'
+        # Get the category from first match (it's a ForeignKey ID)
+        first_category = all_matches[0].get('category')
+        if first_category:
+            try:
+                # If it's a Category object, get the ID
+                if hasattr(first_category, 'id'):
+                    detected_category_id = first_category.id
+                    detected_category_name = first_category.name
+                else:
+                    # It's just an ID
+                    cat_obj = Category.objects.get(id=first_category)
+                    detected_category_id = cat_obj.id
+                    detected_category_name = cat_obj.name
+            except:
+                pass
+    
+    # Default to General if not found
+    if not detected_category_id:
+        general_cat = Category.objects.filter(name='General').first()
+        if general_cat:
+            detected_category_id = general_cat.id
+            detected_category_name = 'General'
     
     # Build detailed breakdown
     details = {
@@ -398,7 +511,10 @@ Return in this EXACT JSON format:
         "context": context_desc,
         "source": source,
         "confidence": confidence,
-        "category": detected_category,
+        "detected_language": detected_lang,
+        "target_language": target_lang,
+        "category": detected_category_id,
+        "category_name": detected_category_name,
         "details": details,
         "admin_review_needed": admin_review,
         "notes": f"Translation quality: {confidence}. Admin review: {'Required' if admin_review else 'Not needed'}"

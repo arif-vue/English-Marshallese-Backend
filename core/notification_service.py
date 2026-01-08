@@ -120,3 +120,71 @@ def send_bulk_notification(user_ids, title, message, data=None):
             
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def notify_admins(title, message, data=None):
+    """
+    Send push notification to all admin/staff users
+    
+    Args:
+        title: Notification title
+        message: Notification message
+        data: Optional dict of additional data
+    
+    Returns:
+        dict: Response with count of notifications sent
+    """
+    try:
+        from authentications.models import CustomUser, UserProfile
+        
+        # Get all admin/staff users
+        admin_users = CustomUser.objects.filter(is_staff=True)
+        admin_ids = list(admin_users.values_list('id', flat=True))
+        
+        if not admin_ids:
+            return {"success": False, "error": "No admin users found"}
+        
+        # Get all player IDs for admin users with notifications enabled
+        profiles = UserProfile.objects.filter(
+            user_id__in=admin_ids,
+            push_notifications_enabled=True,
+            onesignal_player_id__isnull=False
+        ).exclude(onesignal_player_id='')
+        
+        player_ids = [p.onesignal_player_id for p in profiles]
+        
+        if not player_ids:
+            return {"success": False, "error": "No admin users with push notifications enabled"}
+        
+        # Prepare OneSignal API request
+        url = "https://onesignal.com/api/v1/notifications"
+        
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Basic {settings.ONESIGNAL_API_KEY}"
+        }
+        
+        payload = {
+            "app_id": settings.ONESIGNAL_APP_ID,
+            "include_player_ids": player_ids,
+            "headings": {"en": title},
+            "contents": {"en": message},
+        }
+        
+        if data:
+            payload["data"] = data
+        
+        response = requests.post(url, json=payload, headers=headers)
+        response_data = response.json()
+        
+        if response.status_code in [200, 201]:
+            return {
+                "success": True, 
+                "data": response_data,
+                "admins_notified": len(player_ids)
+            }
+        else:
+            return {"success": False, "error": response_data}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -346,15 +346,43 @@ def ai_translate(request):
     # Call AI service
     result = translate_with_ai(text)
     
-    # Get or create default General category
+    # Get category - prefer AI detected category, then user-provided, then General
     from .models import Category
-    try:
-        if category:
-            category_obj = Category.objects.get(name__iexact=category.replace('_', ' '))
-        else:
-            category_obj = Category.objects.get_or_create(name='General')[0]
-    except Category.DoesNotExist:
-        category_obj = Category.objects.get_or_create(name='General')[0]
+    category_obj = None
+    
+    # Category mapping for user input (snake_case to Title Case)
+    category_map = {
+        'common_phrases': 'Common Phrases',
+        'questions': 'Questions',
+        'general': 'General',
+        'symptoms': 'Symptoms',
+        'body_parts': 'Body Parts',
+        'medication': 'Medication'
+    }
+    
+    # Try to get category from AI result first
+    ai_category_id = result.get('category')
+    if ai_category_id:
+        try:
+            category_obj = Category.objects.get(id=ai_category_id)
+        except Category.DoesNotExist:
+            pass
+    
+    # If user provided category and AI didn't find one, use user's
+    if not category_obj and category:
+        category_name = category_map.get(category, 'General')
+        try:
+            category_obj = Category.objects.get(name=category_name)
+        except Category.DoesNotExist:
+            pass
+    
+    # Fallback to General
+    if not category_obj:
+        category_obj, _ = Category.objects.get_or_create(name='General')
+    
+    # Determine status based on admin_review_needed
+    admin_review_needed = result.get('admin_review_needed', True)
+    status = 'pending' if admin_review_needed else 'updated'
     
     # Save to user's history (user is always authenticated)
     history = UserTranslationHistory.objects.create(
@@ -362,19 +390,40 @@ def ai_translate(request):
         source_text=text,
         known_translation=result.get('translation', ''),
         category=category_obj,
-        notes=result.get('context', ''),
-        status='pending'
+        notes=result.get('notes', ''),
+        status=status
     )
     history_id = history.id
     
-    # Add history_id to response and ensure category is serializable
-    response_data = result.copy()
-    response_data['history_id'] = history_id
-    # Ensure category is ID not object
-    if 'category' in response_data and not isinstance(response_data['category'], (int, str)):
-        response_data['category'] = category_obj.id
-    elif 'category' not in response_data:
-        response_data['category'] = category_obj.id
+    # Notify admins if translation requires review
+    if admin_review_needed:
+        from .notification_service import notify_admins
+        notify_admins(
+            title="New Translation Needs Review",
+            message=f"'{text[:50]}...' requires admin review.",
+            data={
+                "type": "translation_review_needed",
+                "history_id": history_id,
+                "source_text": text[:100],
+                "user_email": request.user.email
+            }
+        )
+    
+    # Build clean response data
+    response_data = {
+        'translation': result.get('translation', ''),
+        'source': result.get('source', 'unknown'),
+        'confidence': result.get('confidence', 'medium'),
+        'context': result.get('context', ''),
+        'detected_language': result.get('detected_language', 'english'),
+        'target_language': result.get('target_language', 'marshallese'),
+        'category': category_obj.id,
+        'category_name': category_obj.name,
+        'admin_review_needed': admin_review_needed,
+        'details': result.get('details', {}),
+        'notes': result.get('notes', ''),
+        'history_id': history_id
+    }
     
     return success_response(
         message="Translation completed successfully",
