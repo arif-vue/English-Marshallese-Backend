@@ -26,6 +26,9 @@ urlpatterns = [
     path('ai-feedback/<int:history_id>/update/', views.update_ai_feedback, name='admin_update_ai_feedback'),
     path('ai-feedback/<int:history_id>/delete/', views.delete_ai_feedback, name='admin_delete_ai_feedback'),
     
+    # Admin Notifications (translations needing review)
+    path('notifications/', views.get_admin_notifications, name='admin_notifications'),
+    
     # User Management
     path('users/', views.get_all_users, name='admin_all_users'),
     path('users/page/<int:page>/', views.get_all_users, name='admin_all_users_paginated'),

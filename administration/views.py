@@ -594,6 +594,53 @@ def delete_ai_feedback(request, history_id):
         )
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_admin_notifications(request):
+    """
+    Get admin notifications for translations requiring review
+    GET /api/administration/notifications/
+    
+    Returns translations where admin_review_needed=true (status='pending')
+    with English text, Marshallese text, and Category
+    
+    Only staff/admin users can access
+    """
+    if not request.user.is_staff:
+        return error_response(
+            message="Permission denied. Only admin users can access this endpoint.",
+            code=403
+        )
+    
+    from core.models import UserTranslationHistory
+    
+    # Get all pending translations (admin_review_needed=true)
+    notifications = UserTranslationHistory.objects.filter(
+        status='pending'
+    ).select_related('category', 'user').order_by('-created_date')
+    
+    # Format response with only english, marshallese, category
+    notification_data = [
+        {
+            "id": item.id,
+            "english_text": item.source_text,
+            "marshallese_text": item.known_translation or "",
+            "category": item.category.name if item.category else "General",
+            "created_date": item.created_date.isoformat() if item.created_date else None,
+            "user_email": item.user.email if item.user else None
+        }
+        for item in notifications
+    ]
+    
+    return success_response(
+        message=f"Admin notifications retrieved successfully. {len(notification_data)} translation(s) need review.",
+        data={
+            "notifications": notification_data,
+            "total": len(notification_data)
+        }
+    )
+
+
 # ==================== USER MANAGEMENT ====================
 
 @api_view(['GET'])
